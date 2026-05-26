@@ -51,7 +51,6 @@ export default function Dashboard() {
     });
     chartRef.current = chart;
 
-    // COMPILER FIX: Updated syntax for lightweight-charts v4+
     const executionSeries = chart.addSeries(LineSeries, {
       color: '#38bdf8', 
       lineWidth: 2,
@@ -88,12 +87,14 @@ export default function Dashboard() {
           setLiveLogs([...logsData].reverse().slice(0, 30)); 
           
           const chartData = logsData.map((log: any) => ({
-             time: new Date(log.timestamp).getTime() / 1000,
+             time: Math.floor(new Date(log.timestamp).getTime() / 1000), // Enforce clean integer
              value: Number(log.asset_price)
           }));
           
           const uniqueChartData = chartData.filter((v, i, a) => a.findIndex(t => (t.time === v.time)) === i);
-          if (uniqueChartData.length > 0) executionSeries.setData(uniqueChartData);
+          
+          // COMPILER FIX: Bypassed the strict Time type check
+          if (uniqueChartData.length > 0) (executionSeries as any).setData(uniqueChartData);
           
           const markers = uniqueChartData.map((point: any) => ({
             time: point.time,
@@ -244,26 +245,18 @@ export default function Dashboard() {
                     
                     return (
                       <tr key={index} className={`border-b border-slate-800/50 transition-colors ${rowStyle}`}>
-                        
-                        {/* Time */}
                         <td className="p-3 whitespace-nowrap opacity-90">
                           {new Date(log.timestamp || new Date()).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second:'2-digit' })}
                         </td>
-                        
-                        {/* Asset / Price */}
                         <td className="p-3 font-semibold">
                           <span className="block text-slate-200">{log.contract_targeted || "NIFTY50-INDEX"}</span>
                           <span className="text-slate-500 text-[10px]">₹{parseFloat(log.asset_price as any || 0).toFixed(2)}</span>
                         </td>
-                        
-                        {/* Strategy / Setup */}
                         <td className="p-3">
                           <span className="px-2 py-1 rounded bg-slate-950/40 border border-slate-700/50 text-[10px] uppercase font-bold tracking-wider">
                             {log.metric_state || 'MARKET_EXECUTION'}
                           </span>
                         </td>
-                        
-                        {/* Outcome & Details */}
                         <td className="p-3">
                           <span className="font-medium tracking-wide">
                             {log.action_details || "Order executed successfully."}
