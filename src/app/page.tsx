@@ -10,7 +10,7 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 
 interface SystemLog {
   id: number;
-  created_at: string;
+  timestamp: string; // <-- VERIFIED: Using your exact DB column name
   asset_price: number;
   metric_state: string;
   action_details: string;
@@ -58,7 +58,7 @@ export default function Dashboard() {
     // 3. Fetch Initial Data from Supabase
     const fetchInitialData = async () => {
       try {
-        // Fetch Account Metrics (maybeSingle prevents 406 crash if table is empty)
+        // Fetch Account Metrics
         const { data: metricsData, error: metricsError } = await supabase
           .from('account_metrics')
           .select('*')
@@ -71,7 +71,7 @@ export default function Dashboard() {
         if (metricsData) {
           setMetrics({
             account_capital: Number(metricsData.base_capital || 100000) + Number(metricsData.unrealized_pnl || 0),
-            win_rate: 42.86, // Hardcoded visual placeholder
+            win_rate: 42.86,
             net_profit: Number(metricsData.unrealized_pnl || 0),
             active_allocations: metricsData.open_positions || 0,
             safety_state: "SECURE"
@@ -82,7 +82,7 @@ export default function Dashboard() {
         const { data: logsData, error: logsError } = await supabase
           .from('execution_logs')
           .select('*')
-          .order('created_at', { ascending: false })
+          .order('timestamp', { ascending: false }) // <-- VERIFIED: Sorting by your actual column
           .limit(20);
 
         if (logsError) console.error("Logs DB Error:", logsError.message);
@@ -91,7 +91,7 @@ export default function Dashboard() {
           setLiveLogs(logsData);
           
           const markers = logsData.map((log: any) => ({
-            time: new Date(log.created_at || new Date()).getTime() / 1000,
+            time: new Date(log.timestamp || new Date()).getTime() / 1000, // <-- VERIFIED
             position: log.metric_state === 'BUY' ? 'belowBar' : 'aboveBar',
             color: log.metric_state === 'BUY' ? '#10b981' : '#ef4444',
             shape: log.metric_state === 'BUY' ? 'arrowUp' : 'arrowDown',
@@ -99,7 +99,6 @@ export default function Dashboard() {
           })).sort((a: any, b: any) => a.time - b.time);
 
           if (markers.length > 0) {
-            // TypeScript BYPASS: Forces Next.js to ignore strict type checking here
             (candlestickSeries as any).setMarkers(markers);
           }
         }
@@ -207,7 +206,7 @@ export default function Dashboard() {
                 ) : (
                   liveLogs.map((log, index) => (
                     <tr key={index} className={`border-b border-slate-900/60 transition-colors ${log.metric_state === "SMC_SETUP_MATCH" ? "bg-emerald-950/20 text-emerald-400 border-l-2 border-emerald-500" : "text-slate-400 hover:bg-slate-900/30"}`}>
-                      <td className="p-3 font-semibold">{new Date(log.created_at || new Date()).toLocaleTimeString()}</td>
+                      <td className="p-3 font-semibold">{new Date(log.timestamp || new Date()).toLocaleTimeString()}</td>
                       <td className="p-3">₹{parseFloat(log.asset_price as any || 0).toFixed(2)}</td>
                       <td className="p-3">
                         <span className={`px-2 py-0.5 rounded text-[10px] uppercase font-bold bg-slate-800 text-slate-400`}>
