@@ -42,16 +42,145 @@ const ASSETS = [
   { value: '^NSEI', label: 'NIFTY 50', category: 'Indian Indices' },
   { value: '^NSEBANK', label: 'BANK NIFTY', category: 'Indian Indices' },
   { value: '^BSESN', label: 'SENSEX', category: 'Indian Indices' },
-  { value: 'RELIANCE.NS', label: 'Reliance Industries', category: 'Indian Equities' },
-  { value: 'TCS.NS', label: 'TCS', category: 'Indian Equities' },
-  { value: 'HDFCBANK.NS', label: 'HDFC Bank', category: 'Indian Equities' },
-  { value: 'INFY.NS', label: 'Infosys', category: 'Indian Equities' },
+  
+  // Indian Option Stocks
+  { value: 'AARTIIND.NS', label: 'AARTI INDUSTRIES', category: 'Indian Option Stocks' },
+  { value: 'ABB.NS', label: 'ABB INDIA', category: 'Indian Option Stocks' },
+  { value: 'ABFRL.NS', label: 'ADITYA BIRLA FASHION', category: 'Indian Option Stocks' },
+  { value: 'ACC.NS', label: 'ACC LIMITED', category: 'Indian Option Stocks' },
+  { value: 'ADANIENT.NS', label: 'ADANI ENTERPRISES', category: 'Indian Option Stocks' },
+  { value: 'ADANIPORTS.NS', label: 'ADANI PORTS', category: 'Indian Option Stocks' },
+  { value: 'ALKEM.NS', label: 'ALKEM LABS', category: 'Indian Option Stocks' },
+  { value: 'AMBUJACEM.NS', label: 'AMBUJA CEMENTS', category: 'Indian Option Stocks' },
+  { value: 'APOLLOHOSP.NS', label: 'APOLLO HOSPITALS', category: 'Indian Option Stocks' },
+  { value: 'APOLLOTYRE.NS', label: 'APOLLO TYRES', category: 'Indian Option Stocks' },
+  { value: 'ASHOKLEY.NS', label: 'ASHOK LEYLAND', category: 'Indian Option Stocks' },
+  { value: 'ASIANPAINT.NS', label: 'ASIAN PAINTS', category: 'Indian Option Stocks' },
+  { value: 'ASTRAL.NS', label: 'ASTRAL LIMITED', category: 'Indian Option Stocks' },
+  { value: 'ATUL.NS', label: 'ATUL LIMITED', category: 'Indian Option Stocks' },
+  { value: 'AUBANK.NS', label: 'AU SMALL FINANCE BANK', category: 'Indian Option Stocks' },
+  { value: 'AUROPHARMA.NS', label: 'AUROBINDO PHARMA', category: 'Indian Option Stocks' },
+  { value: 'AXISBANK.NS', label: 'AXIS BANK', category: 'Indian Option Stocks' },
+  { value: 'BAJAJ-AUTO.NS', label: 'BAJAJ AUTO', category: 'Indian Option Stocks' },
+  { value: 'BAJFINANCE.NS', label: 'BAJAJ FINANCE', category: 'Indian Option Stocks' },
+  { value: 'BAJAJFINSV.NS', label: 'BAJAJ FINSERV', category: 'Indian Option Stocks' },
+  { value: 'BALKRISIND.NS', label: 'BALKRISHNA IND', category: 'Indian Option Stocks' },
+  { value: 'BANDHANBNK.NS', label: 'BANDHAN BANK', category: 'Indian Option Stocks' },
+  { value: 'BANKBARODA.NS', label: 'BANK OF BARODA', category: 'Indian Option Stocks' },
+  { value: 'BEL.NS', label: 'BHARAT ELECTRONICS', category: 'Indian Option Stocks' },
+  { value: 'BERGERPAINT.NS', label: 'BERGER PAINTS', category: 'Indian Option Stocks' },
+  { value: 'BHARTIARTL.NS', label: 'BHARTI AIRTEL', category: 'Indian Option Stocks' },
+  { value: 'BHEL.NS', label: 'BHEL', category: 'Indian Option Stocks' },
+  { value: 'BIOCON.NS', label: 'BIOCON', category: 'Indian Option Stocks' },
+  { value: 'BOSCHLTD.NS', label: 'BOSCH', category: 'Indian Option Stocks' },
+  { value: 'BPCL.NS', label: 'BPCL', category: 'Indian Option Stocks' },
+  { value: 'BRITANNIA.NS', label: 'BRITANNIA', category: 'Indian Option Stocks' },
+  { value: 'CANBK.NS', label: 'CANARA BANK', category: 'Indian Option Stocks' },
+  { value: 'CHOLAFIN.NS', label: 'CHOLAMANDALAM FIN', category: 'Indian Option Stocks' },
+  { value: 'CIPLA.NS', label: 'CIPLA', category: 'Indian Option Stocks' },
+  { value: 'COALINDIA.NS', label: 'COAL INDIA', category: 'Indian Option Stocks' },
+  { value: 'COFORGE.NS', label: 'COFORGE', category: 'Indian Option Stocks' },
+  { value: 'CONCOR.NS', label: 'CONCOR', category: 'Indian Option Stocks' },
+  { value: 'CUMMINSIND.NS', label: 'CUMMINS INDIA', category: 'Indian Option Stocks' },
+  { value: 'DABUR.NS', label: 'DABUR', category: 'Indian Option Stocks' },
+  { value: 'DEEPAKNTR.NS', label: 'DEEPAK NITRITE', category: 'Indian Option Stocks' },
+  { value: 'DIVISLAB.NS', label: 'DIVIS LABS', category: 'Indian Option Stocks' },
+  { value: 'DLF.NS', label: 'DLF', category: 'Indian Option Stocks' },
+  { value: 'DRREDDY.NS', label: 'DR REDDYS LABS', category: 'Indian Option Stocks' },
+  { value: 'EICHERMOT.NS', label: 'EICHER MOTORS', category: 'Indian Option Stocks' },
+  { value: 'ESCORTS.NS', label: 'ESCORTS KUBOTA', category: 'Indian Option Stocks' },
+  { value: 'FEDERALBNK.NS', label: 'FEDERAL BANK', category: 'Indian Option Stocks' },
+  { value: 'GAIL.NS', label: 'GAIL', category: 'Indian Option Stocks' },
+  { value: 'GLENMARK.NS', label: 'GLENMARK PHARMA', category: 'Indian Option Stocks' },
+  { value: 'GMRINFRA.NS', label: 'GMR INFRA', category: 'Indian Option Stocks' },
+  { value: 'GODREJPROP.NS', label: 'GODREJ PROPERTIES', category: 'Indian Option Stocks' },
+  { value: 'GRASIM.NS', label: 'GRASIM INDUSTRIES', category: 'Indian Option Stocks' },
+  { value: 'HAL.NS', label: 'HINDUSTAN AERONAUTICS', category: 'Indian Option Stocks' },
+  { value: 'HCLTECH.NS', label: 'HCL TECH', category: 'Indian Option Stocks' },
+  { value: 'HDFCBANK.NS', label: 'HDFC BANK', category: 'Indian Option Stocks' },
+  { value: 'HDFCLIFE.NS', label: 'HDFC LIFE', category: 'Indian Option Stocks' },
+  { value: 'HEROMOTOCO.NS', label: 'HERO MOTOCORP', category: 'Indian Option Stocks' },
+  { value: 'HINDALCO.NS', label: 'HINDALCO', category: 'Indian Option Stocks' },
+  { value: 'HINDCOPPER.NS', label: 'HINDUSTAN COPPER', category: 'Indian Option Stocks' },
+  { value: 'HINDUNILVR.NS', label: 'HINDUSTAN UNILEVER', category: 'Indian Option Stocks' },
+  { value: 'ICICIBANK.NS', label: 'ICICI BANK', category: 'Indian Option Stocks' },
+  { value: 'ICICIPRULI.NS', label: 'ICICI PRU LIFE', category: 'Indian Option Stocks' },
+  { value: 'IDEA.NS', label: 'VODAFONE IDEA', category: 'Indian Option Stocks' },
+  { value: 'IEX.NS', label: 'IEX', category: 'Indian Option Stocks' },
+  { value: 'IGL.NS', label: 'IGL', category: 'Indian Option Stocks' },
+  { value: 'INDHOTEL.NS', label: 'INDIAN HOTELS', category: 'Indian Option Stocks' },
+  { value: 'INDUSINDBK.NS', label: 'INDUSIND BANK', category: 'Indian Option Stocks' },
+  { value: 'INFY.NS', label: 'INFOSYS', category: 'Indian Option Stocks' },
+  { value: 'IOC.NS', label: 'IOC', category: 'Indian Option Stocks' },
+  { value: 'IPCALAB.NS', label: 'IPCA LABS', category: 'Indian Option Stocks' },
+  { value: 'IRCTC.NS', label: 'IRCTC', category: 'Indian Option Stocks' },
+  { value: 'ITC.NS', label: 'ITC', category: 'Indian Option Stocks' },
+  { value: 'JINDALSTEL.NS', label: 'JINDAL STEEL', category: 'Indian Option Stocks' },
+  { value: 'JSWSTEEL.NS', label: 'JSW STEEL', category: 'Indian Option Stocks' },
+  { value: 'JUBLFOOD.NS', label: 'JUBILANT FOODWORKS', category: 'Indian Option Stocks' },
+  { value: 'KOTAKBANK.NS', label: 'KOTAK BANK', category: 'Indian Option Stocks' },
+  { value: 'LALPATHLAB.NS', label: 'DR LAL PATHLABS', category: 'Indian Option Stocks' },
+  { value: 'LICHSGFIN.NS', label: 'LIC HOUSING FINANCE', category: 'Indian Option Stocks' },
+  { value: 'LT.NS', label: 'L&T', category: 'Indian Option Stocks' },
+  { value: 'LTIM.NS', label: 'LTIMINDTREE', category: 'Indian Option Stocks' },
+  { value: 'M&M.NS', label: 'M&M', category: 'Indian Option Stocks' },
+  { value: 'MARUTI.NS', label: 'MARUTI SUZUKI', category: 'Indian Option Stocks' },
+  { value: 'MCX.NS', label: 'MCX', category: 'Indian Option Stocks' },
+  { value: 'METROPOLIS.NS', label: 'METROPOLIS', category: 'Indian Option Stocks' },
+  { value: 'MRF.NS', label: 'MRF TYRES', category: 'Indian Option Stocks' },
+  { value: 'MUTHOOTFIN.NS', label: 'MUTHOOT FINANCE', category: 'Indian Option Stocks' },
+  { value: 'NATIONALUM.NS', label: 'NATIONAL ALUMINIUM', category: 'Indian Option Stocks' },
+  { value: 'NESTLEIND.NS', label: 'NESTLE INDIA', category: 'Indian Option Stocks' },
+  { value: 'NMDC.NS', label: 'NMDC', category: 'Indian Option Stocks' },
+  { value: 'NTPC.NS', label: 'NTPC', category: 'Indian Option Stocks' },
+  { value: 'OBEROIRLTY.NS', label: 'OBEROI REALTY', category: 'Indian Option Stocks' },
+  { value: 'ONGC.NS', label: 'ONGC', category: 'Indian Option Stocks' },
+  { value: 'PAGEIND.NS', label: 'PAGE INDUSTRIES', category: 'Indian Option Stocks' },
+  { value: 'PERSISTENT.NS', label: 'PERSISTENT SYSTEMS', category: 'Indian Option Stocks' },
+  { value: 'PETRONET.NS', label: 'PETRONET LNG', category: 'Indian Option Stocks' },
+  { value: 'PFC.NS', label: 'PFC', category: 'Indian Option Stocks' },
+  { value: 'PIDILITIND.NS', label: 'PIDILITE IND', category: 'Indian Option Stocks' },
+  { value: 'PIIND.NS', label: 'PI INDUSTRIES', category: 'Indian Option Stocks' },
+  { value: 'PNB.NS', label: 'PNB', category: 'Indian Option Stocks' },
+  { value: 'POWERGRID.NS', label: 'POWER GRID', category: 'Indian Option Stocks' },
+  { value: 'RBLBANK.NS', label: 'RBL BANK', category: 'Indian Option Stocks' },
+  { value: 'RECLTD.NS', label: 'REC LIMITED', category: 'Indian Option Stocks' },
+  { value: 'RELIANCE.NS', label: 'RELIANCE', category: 'Indian Option Stocks' },
+  { value: 'SAIL.NS', label: 'SAIL', category: 'Indian Option Stocks' },
+  { value: 'SBICARD.NS', label: 'SBI CARDS', category: 'Indian Option Stocks' },
+  { value: 'SBILIFE.NS', label: 'SBI LIFE', category: 'Indian Option Stocks' },
+  { value: 'SBIN.NS', label: 'SBIN', category: 'Indian Option Stocks' },
+  { value: 'SHRIRAMFIN.NS', label: 'SHRIRAM FINANCE', category: 'Indian Option Stocks' },
+  { value: 'SIEMENS.NS', label: 'SIEMENS', category: 'Indian Option Stocks' },
+  { value: 'SRF.NS', label: 'SRF LIMITED', category: 'Indian Option Stocks' },
+  { value: 'SUNPHARMA.NS', label: 'SUN PHARMA', category: 'Indian Option Stocks' },
+  { value: 'SYNGENE.NS', label: 'SYNGENE', category: 'Indian Option Stocks' },
+  { value: 'TATACHEM.NS', label: 'TATA CHEMICALS', category: 'Indian Option Stocks' },
+  { value: 'TATACONSUM.NS', label: 'TATA CONSUMER', category: 'Indian Option Stocks' },
+  { value: 'TATAMOTORS.NS', label: 'TATA MOTORS', category: 'Indian Option Stocks' },
+  { value: 'TATAPOWER.NS', label: 'TATA POWER', category: 'Indian Option Stocks' },
+  { value: 'TATASTEEL.NS', label: 'TATA STEEL', category: 'Indian Option Stocks' },
+  { value: 'TCS.NS', label: 'TCS', category: 'Indian Option Stocks' },
+  { value: 'TECHM.NS', label: 'TECH MAHINDRA', category: 'Indian Option Stocks' },
+  { value: 'TITAN.NS', label: 'TITAN COMPANY', category: 'Indian Option Stocks' },
+  { value: 'TORNTPHARM.NS', label: 'TORRENT PHARMA', category: 'Indian Option Stocks' },
+  { value: 'TRENT.NS', label: 'TRENT', category: 'Indian Option Stocks' },
+  { value: 'TVSMOTOR.NS', label: 'TVS MOTOR', category: 'Indian Option Stocks' },
+  { value: 'ULTRACEMCO.NS', label: 'ULTRATECH CEMENT', category: 'Indian Option Stocks' },
+  { value: 'UPL.NS', label: 'UPL LIMITED', category: 'Indian Option Stocks' },
+  { value: 'VOLTAS.NS', label: 'VOLTAS', category: 'Indian Option Stocks' },
+  { value: 'WIPRO.NS', label: 'WIPRO', category: 'Indian Option Stocks' },
+  { value: 'ZEEL.NS', label: 'ZEEL', category: 'Indian Option Stocks' },
+  
+  // Global Indices
   { value: '^GSPC', label: 'S&P 500 (US)', category: 'Global Indices' },
   { value: '^DJI', label: 'Dow Jones (US)', category: 'Global Indices' },
   { value: '^IXIC', label: 'Nasdaq (US)', category: 'Global Indices' },
   { value: '^GDAXI', label: 'DAX (Germany)', category: 'Global Indices' },
   { value: '^FTSE', label: 'FTSE 100 (UK)', category: 'Global Indices' },
   { value: '^FCHI', label: 'CAC 40 (France)', category: 'Global Indices' },
+  
+  // Forex / Commodities / Crypto
   { value: 'EURUSD=X', label: 'EUR / USD', category: 'Forex' },
   { value: 'GBPUSD=X', label: 'GBP / USD', category: 'Forex' },
   { value: 'GC=F', label: 'Gold Spot', category: 'Commodities' },
@@ -59,6 +188,61 @@ const ASSETS = [
 ];
 
 // Helper Functions for Performance Analytics
+const isAssetMatch = (assetVal: string, symbol: string) => {
+  if (!assetVal || !symbol) return false;
+  const cleanAsset = assetVal.replace('.NS', '').replace('NSE:', '').replace('MCX:', '').replace('CDS:', '').replace('BSE:', '').toUpperCase();
+  const cleanSymbol = symbol.replace('.NS', '').replace('NSE:', '').replace('MCX:', '').replace('CDS:', '').replace('BSE:', '').toUpperCase();
+  return cleanAsset === cleanSymbol || assetVal === symbol;
+};
+
+const getMarketStatusForAsset = (assetVal: string): 'OPEN' | 'CLOSED' => {
+  const now = new Date();
+  const asset = ASSETS.find(a => a.value === assetVal);
+  const category = asset ? asset.category : '';
+  
+  if (category === 'Crypto') {
+    return 'OPEN';
+  }
+  if (category === 'Commodities') {
+    return 'OPEN';
+  }
+  if (category === 'Forex') {
+    const day = now.getUTCDay();
+    const hour = now.getUTCHours();
+    if (day === 6) return 'CLOSED'; // Saturday
+    if (day === 5 && hour >= 22) return 'CLOSED'; // Friday night
+    if (day === 0 && hour < 22) return 'CLOSED'; // Sunday morning
+    return 'OPEN';
+  }
+  if (category === 'Global Indices') {
+    if (['^GDAXI', '^FTSE', '^FCHI'].includes(assetVal)) {
+      const cetTime = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Berlin' }));
+      const day = cetTime.getDay();
+      const hour = cetTime.getHours();
+      const minute = cetTime.getMinutes();
+      if (day === 0 || day === 6) return 'CLOSED'; // Weekend
+      const totalMinutes = hour * 60 + minute;
+      return (totalMinutes >= 9 * 60 && totalMinutes <= 17 * 60 + 30) ? 'OPEN' : 'CLOSED'; // 09:00 to 17:30 CET
+    } else {
+      const estTime = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+      const day = estTime.getDay();
+      const hour = estTime.getHours();
+      const minute = estTime.getMinutes();
+      if (day === 0 || day === 6) return 'CLOSED'; // Weekend
+      const totalMinutes = hour * 60 + minute;
+      return (totalMinutes >= 9 * 60 + 30 && totalMinutes <= 16 * 60) ? 'OPEN' : 'CLOSED'; // 09:30 to 16:00 EST
+    }
+  }
+  // Default: Indian Indices or Option Stocks (Asia/Kolkata timezone)
+  const istTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+  const day = istTime.getDay();
+  const hour = istTime.getHours();
+  const minute = istTime.getMinutes();
+  if (day === 0 || day === 6) return 'CLOSED'; // Weekend
+  const totalMinutes = hour * 60 + minute;
+  return (totalMinutes >= 9 * 60 + 15 && totalMinutes <= 15 * 60 + 30) ? 'OPEN' : 'CLOSED'; // 09:15 to 15:30 IST
+};
+
 const calculateProfitFactor = (tradesList: Trade[]) => {
   const closed = tradesList.filter(t => t.status === 'CLOSED');
   const profit = closed.filter(t => Number(t.pnl || 0) > 0).reduce((acc, t) => acc + Number(t.pnl || 0), 0);
@@ -236,11 +420,8 @@ export default function Dashboard() {
           });
         }
 
-        // Draw Equity Curve
-        updateEquityCurveChart(tradesData);
-        
         // Update live spot price from open trade if exists
-        const openTrade = tradesData.find(t => t.status === 'OPEN');
+        const openTrade = tradesData.find(t => t.status === 'OPEN' && isAssetMatch(assetRef.current, t.symbol));
         if (openTrade) {
           setLiveSpotPrice(Number(openTrade.entry_price));
         }
@@ -286,16 +467,27 @@ export default function Dashboard() {
           fvgBottomSeriesRef.current.setData(fvgBottomData);
         }
 
-        // Apply buy markers
-        const markers = candles
-          .filter((c: any) => c.long_signal === true)
-          .map((c: any) => ({
-            time: c.time,
-            position: 'belowBar' as const,
-            color: '#10b981',
-            shape: 'arrowUp' as const,
-            text: 'SMC BUY'
-          }));
+        // Apply buy & sell markers
+        const markers: any[] = [];
+        candles.forEach((c: any) => {
+          if (c.long_signal === true) {
+            markers.push({
+              time: c.time,
+              position: 'belowBar' as const,
+              color: '#10b981',
+              shape: 'arrowUp' as const,
+              text: 'SMC BUY'
+            });
+          } else if (c.short_signal === true) {
+            markers.push({
+              time: c.time,
+              position: 'aboveBar' as const,
+              color: '#f43f5e',
+              shape: 'arrowDown' as const,
+              text: 'SMC SELL'
+            });
+          }
+        });
         if (candleMarkersRef.current) {
           candleMarkersRef.current.setMarkers(markers);
         }
@@ -314,26 +506,8 @@ export default function Dashboard() {
   };
 
   // Check market hours status locally / backend
-  const checkMarketState = async () => {
-    try {
-      const res = await fetch(`${BACKEND_URL}/api/live-state`);
-      const data = await res.json();
-      if (data && data.metrics) {
-        setMarketState(data.metrics.safety_state === "DAILY_LOSS_HALT" ? "CLOSED" : "OPEN");
-      }
-    } catch (e) {
-      const options = { timeZone: 'Asia/Kolkata' };
-      const kolkataTime = new Date(new Date().toLocaleString('en-US', options));
-      const day = kolkataTime.getDay();
-      const hour = kolkataTime.getHours();
-      const minute = kolkataTime.getMinutes();
-      
-      const isWeekend = day === 0 || day === 6;
-      const totalMinutes = hour * 60 + minute;
-      const isOpenTime = totalMinutes >= 9 * 60 + 15 && totalMinutes <= 15 * 60 + 30;
-      
-      setMarketState(isWeekend || !isOpenTime ? 'CLOSED' : 'OPEN');
-    }
+  const checkMarketState = () => {
+    setMarketState(getMarketStatusForAsset(selectedAsset));
   };
 
   // Generate simulated candle data if backend is offline
@@ -388,14 +562,15 @@ export default function Dashboard() {
       
       // FVG
       if (i % 25 === 0) {
-        mockFvgTop.push({ time: time as any, value: high + 4 });
-        mockFvgBottom.push({ time: time as any, value: low - 2 });
+        const isBuy = (i / 25) % 2 === 0;
+        mockFvgTop.push({ time: time as any, value: high + (isBuy ? 4 : -2) });
+        mockFvgBottom.push({ time: time as any, value: low + (isBuy ? -2 : 4) });
         mockMarkers.push({
           time: time as any,
-          position: 'belowBar' as const,
-          color: '#06b6d4',
-          shape: 'arrowUp' as const,
-          text: 'SMC BUY'
+          position: isBuy ? 'belowBar' as const : 'aboveBar' as const,
+          color: isBuy ? '#10b981' : '#f43f5e',
+          shape: isBuy ? 'arrowUp' as const : 'arrowDown' as const,
+          text: isBuy ? 'SMC BUY' : 'SMC SELL'
         });
       }
       
@@ -424,8 +599,12 @@ export default function Dashboard() {
       .sort((a, b) => new Date(a.exit_time || "").getTime() - new Date(b.exit_time || "").getTime());
 
     let startingEquity = 100000.00;
+    const firstTradeTime = closed.length > 0 
+      ? Math.floor(new Date(closed[0].exit_time || "").getTime() / 1000) - 3600 
+      : Math.floor((Date.now() - 3600 * 24 * 7 * 1000) / 1000);
+      
     const equityCurveData = [{
-      time: Math.floor((Date.now() - 3600 * 24 * 7 * 1000) / 1000) as any,
+      time: firstTradeTime as any,
       value: startingEquity
     }];
 
@@ -606,8 +785,17 @@ export default function Dashboard() {
   useEffect(() => {
     if (mounted) {
       loadChartAndState(resolution, selectedAsset);
+      checkMarketState();
     }
   }, [resolution, selectedAsset]);
+
+  // Reactive Equity Curve Rebuild
+  useEffect(() => {
+    if (mounted && trades) {
+      const filtered = trades.filter(t => isAssetMatch(selectedAsset, t.symbol));
+      updateEquityCurveChart(filtered);
+    }
+  }, [trades, selectedAsset, mounted]);
 
   const copyToClipboard = (hash: string) => {
     navigator.clipboard.writeText(hash);
@@ -615,7 +803,8 @@ export default function Dashboard() {
     setTimeout(() => setCopiedHash(null), 2000);
   };
 
-  const openPosition = trades.find(t => t.status === 'OPEN');
+  const openPosition = trades.find(t => t.status === 'OPEN' && isAssetMatch(selectedAsset, t.symbol));
+  const otherOpenPosition = trades.find(t => t.status === 'OPEN' && !isAssetMatch(selectedAsset, t.symbol));
   
   // Calculate live unrealized pnl
   let liveUnrealizedPnl = 0.00;
@@ -625,6 +814,14 @@ export default function Dashboard() {
       : Number(openPosition.entry_price) - liveSpotPrice;
     liveUnrealizedPnl = delta * openPosition.quantity;
   }
+
+  // Filter trades for metrics and tabs
+  const filteredTrades = trades.filter(t => isAssetMatch(selectedAsset, t.symbol));
+  const filteredClosed = filteredTrades.filter(t => t.status === 'CLOSED');
+  const filteredWins = filteredClosed.filter(t => Number(t.pnl || 0) > 0);
+  const filteredWinRate = filteredClosed.length > 0 ? Number(((filteredWins.length / filteredClosed.length) * 100).toFixed(2)) : 0.0;
+  
+  const filteredRealizedPnl = filteredClosed.reduce((acc, curr) => acc + Number(curr.pnl || 0), 0);
 
   if (!mounted) {
     return (
@@ -713,7 +910,7 @@ export default function Dashboard() {
         <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
           <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Net Equity</span>
           <span className="text-xl md:text-2xl font-black text-slate-100 font-mono">
-            ₹{metrics.account_capital.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+            ₹{(100000.00 + filteredRealizedPnl).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
           </span>
           <div className="text-[10px] text-slate-500 mt-1 font-mono">
             Base: ₹1,00,000.00
@@ -726,9 +923,9 @@ export default function Dashboard() {
             <span className="text-[9px] font-bold font-mono px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">BOOKED</span>
           </div>
           <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Realized P&L</span>
-          <span className={`text-xl md:text-2xl font-black font-mono ${metrics.daily_realized_pnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
-            {metrics.daily_realized_pnl >= 0 ? "+" : ""}
-            ₹{metrics.daily_realized_pnl.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+          <span className={`text-xl md:text-2xl font-black font-mono ${filteredRealizedPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+            {filteredRealizedPnl >= 0 ? "+" : ""}
+            ₹{filteredRealizedPnl.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
           </span>
           <div className="text-[10px] text-slate-500 mt-1 font-mono">
             Closed trades profit/loss
@@ -754,11 +951,11 @@ export default function Dashboard() {
         <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
           <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Today's Session</span>
           <span className="text-xl md:text-2xl font-black text-slate-100 font-mono">
-            {metrics.total_trades}
+            {filteredTrades.length}
           </span>
           <div className="text-[10px] text-slate-500 mt-1 font-mono flex items-center justify-between">
             <span>Total Trades</span>
-            <span className="text-cyan-400 font-semibold">{metrics.win_rate}% Win Rate</span>
+            <span className="text-cyan-400 font-semibold">{filteredWinRate}% Win Rate</span>
           </div>
         </div>
 
@@ -776,6 +973,42 @@ export default function Dashboard() {
           </div>
         </div>
       </section>
+
+      {/* Cross-Asset Position Warning Banner */}
+      {otherOpenPosition && (
+        <div className="border border-amber-500/20 bg-amber-500/5 backdrop-blur-md rounded-2xl p-4 mb-6 flex flex-col md:flex-row items-center justify-between shadow-lg shadow-amber-950/15">
+          <div className="flex items-center gap-3">
+            <div className="flex items-center justify-center h-8 w-8 rounded-lg bg-amber-500/15 border border-amber-500/20 text-amber-400 font-bold">
+              ⚠️
+            </div>
+            <div>
+              <div className="text-xs font-bold text-slate-200">
+                ACTIVE POSITION RUNNING ON {otherOpenPosition.symbol.toUpperCase()}
+              </div>
+              <div className="text-[10px] text-slate-400 font-mono mt-0.5">
+                Direction: <span className={otherOpenPosition.direction === 'BUY' ? 'text-emerald-400 font-bold' : 'text-rose-400 font-bold'}>{otherOpenPosition.direction}</span> | 
+                Entry: ₹{Number(otherOpenPosition.entry_price).toLocaleString('en-IN', { minimumFractionDigits: 2 })} | 
+                Qty: {otherOpenPosition.quantity}
+              </div>
+            </div>
+          </div>
+          <button
+            onClick={() => {
+              const match = ASSETS.find(a => isAssetMatch(a.value, otherOpenPosition.symbol));
+              if (match) {
+                setSelectedAsset(match.value);
+                setSelectedAssetLabel(match.label);
+              } else {
+                setSelectedAsset(otherOpenPosition.symbol);
+                setSelectedAssetLabel(otherOpenPosition.symbol);
+              }
+            }}
+            className="mt-3 md:mt-0 px-4 py-1.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/35 text-amber-300 text-xs font-mono font-bold tracking-wider transition-all cursor-pointer"
+          >
+            SWITCH TO {otherOpenPosition.symbol.toUpperCase()}
+          </button>
+        </div>
+      )}
 
       {/* 3. Split Screen Brokerage Layout */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -856,28 +1089,28 @@ export default function Dashboard() {
                     <div className="bg-slate-900/50 p-3 rounded-lg border border-slate-850">
                       <span className="text-slate-500 text-[9px] uppercase tracking-wider block mb-1">Profit Factor</span>
                       <span className="text-lg font-black text-cyan-400">
-                        {calculateProfitFactor(trades).toFixed(2)}
+                        {calculateProfitFactor(filteredTrades).toFixed(2)}
                       </span>
                     </div>
                     
                     <div className="bg-slate-900/50 p-3 rounded-lg border border-slate-850">
                       <span className="text-slate-500 text-[9px] uppercase tracking-wider block mb-1">Win Ratio</span>
                       <span className="text-lg font-black text-emerald-400">
-                        {metrics.win_rate}%
+                        {filteredWinRate}%
                       </span>
                     </div>
 
                     <div className="bg-slate-900/50 p-3 rounded-lg border border-slate-850">
                       <span className="text-slate-500 text-[9px] uppercase tracking-wider block mb-1">Avg Win</span>
                       <span className="text-xs font-bold text-emerald-400">
-                        ₹{calculateAvgWinLoss(trades).avgWin.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                        ₹{calculateAvgWinLoss(filteredTrades).avgWin.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
                       </span>
                     </div>
 
                     <div className="bg-slate-900/50 p-3 rounded-lg border border-slate-850">
                       <span className="text-slate-500 text-[9px] uppercase tracking-wider block mb-1">Avg Loss</span>
                       <span className="text-xs font-bold text-rose-400">
-                        ₹{calculateAvgWinLoss(trades).avgLoss.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                        ₹{calculateAvgWinLoss(filteredTrades).avgLoss.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
                       </span>
                     </div>
                   </div>
@@ -886,19 +1119,19 @@ export default function Dashboard() {
                     <div className="flex justify-between mb-2">
                       <span className="text-slate-400 uppercase tracking-widest text-[9px]">Winning Trades</span>
                       <span className="text-emerald-400 font-bold">
-                        {trades.filter(t => t.status === 'CLOSED' && Number(t.pnl || 0) > 0).length}
+                        {filteredTrades.filter(t => t.status === 'CLOSED' && Number(t.pnl || 0) > 0).length}
                       </span>
                     </div>
                     <div className="flex justify-between mb-2">
                       <span className="text-slate-400 uppercase tracking-widest text-[9px]">Losing Trades</span>
                       <span className="text-rose-400 font-bold">
-                        {trades.filter(t => t.status === 'CLOSED' && Number(t.pnl || 0) <= 0).length}
+                        {filteredTrades.filter(t => t.status === 'CLOSED' && Number(t.pnl || 0) <= 0).length}
                       </span>
                     </div>
                     <div className="flex justify-between border-t border-slate-800 pt-2">
                       <span className="text-slate-400 uppercase tracking-widest text-[9px]">Total Completed</span>
                       <span className="text-slate-200 font-bold">
-                        {trades.filter(t => t.status === 'CLOSED').length}
+                        {filteredClosed.length}
                       </span>
                     </div>
                   </div>
@@ -914,20 +1147,20 @@ export default function Dashboard() {
                     <div className="grid grid-cols-3 gap-4 mb-4">
                       <div className="bg-slate-900/30 p-3 rounded-lg border border-slate-850">
                         <span className="text-slate-500 text-[8px] uppercase tracking-wider block mb-1">Weekly Return</span>
-                        <span className={`text-sm font-black ${calculatePeriodReturn(trades, 'weekly') >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                          ₹{calculatePeriodReturn(trades, 'weekly').toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                        <span className={`text-sm font-black ${calculatePeriodReturn(filteredTrades, 'weekly') >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                          ₹{calculatePeriodReturn(filteredTrades, 'weekly').toLocaleString('en-IN', { maximumFractionDigits: 0 })}
                         </span>
                       </div>
                       <div className="bg-slate-900/30 p-3 rounded-lg border border-slate-850">
                         <span className="text-slate-500 text-[8px] uppercase tracking-wider block mb-1">Monthly Return</span>
-                        <span className={`text-sm font-black ${calculatePeriodReturn(trades, 'monthly') >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                          ₹{calculatePeriodReturn(trades, 'monthly').toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                        <span className={`text-sm font-black ${calculatePeriodReturn(filteredTrades, 'monthly') >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                          ₹{calculatePeriodReturn(filteredTrades, 'monthly').toLocaleString('en-IN', { maximumFractionDigits: 0 })}
                         </span>
                       </div>
                       <div className="bg-slate-900/30 p-3 rounded-lg border border-slate-850">
                         <span className="text-slate-500 text-[8px] uppercase tracking-wider block mb-1">All-Time Net PnL</span>
-                        <span className={`text-sm font-black ${metrics.net_profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                          ₹{metrics.net_profit.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                        <span className={`text-sm font-black ${filteredRealizedPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                          ₹{filteredRealizedPnl.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
                         </span>
                       </div>
                     </div>
@@ -944,7 +1177,7 @@ export default function Dashboard() {
                           </tr>
                         </thead>
                         <tbody>
-                          {calculateDailyBreakdown(trades).map((day, idx) => (
+                          {calculateDailyBreakdown(filteredTrades).map((day, idx) => (
                             <tr key={idx} className="border-b border-slate-850/50 hover:bg-slate-900/20">
                               <td className="py-2 px-1 text-slate-300 font-bold">{day.date}</td>
                               <td className="py-2 px-1 text-slate-400 text-center font-bold">{day.count}</td>
@@ -1027,12 +1260,12 @@ export default function Dashboard() {
 
           {/* Ledger scrollable container */}
           <div className="flex flex-col gap-3 max-h-[620px] overflow-y-auto pr-1 scrollbar-thin">
-            {trades.length === 0 ? (
-              <div className="text-center py-12 text-slate-550 font-mono text-xs border border-dashed border-slate-850 rounded-xl bg-slate-900/10">
-                NO TRADES IN ACTIVE LEDGER.
+            {filteredTrades.length === 0 ? (
+              <div className="text-center py-12 text-slate-500 font-mono text-xs border border-dashed border-slate-850 rounded-xl bg-slate-900/10">
+                NO TRADES IN ACTIVE LEDGER FOR {selectedAssetLabel.toUpperCase()}.
               </div>
             ) : (
-              trades.map((t) => {
+              filteredTrades.map((t) => {
                 const isExpanded = expandedTradeId === t.id;
                 const formattedTime = new Date(t.entry_time).toLocaleTimeString('en-US', {
                   hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
@@ -1121,7 +1354,7 @@ export default function Dashboard() {
                         {t.status === 'CLOSED' && (
                           <div className="bg-[#0f1d17]/30 border border-emerald-950/20 p-2 rounded text-[10px] text-slate-400 leading-normal">
                             <span className="text-emerald-400 font-bold block uppercase text-[8px] mb-0.5">BROKER RAW RESPONSE</span>
-                            BUY {t.symbol}_ATM_CE | SL: {Number(t.entry_price - 20).toFixed(1)} | TP: {Number(t.entry_price + 40).toFixed(1)}
+                            {t.direction} {t.symbol}{"_ATM_"}{t.direction === 'BUY' ? 'CE' : 'PE'} | SL: {Number(t.entry_price - 20).toFixed(1)} | TP: {Number(t.entry_price + 40).toFixed(1)}
                           </div>
                         )}
                       </div>
