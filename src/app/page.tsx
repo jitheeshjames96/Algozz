@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from 'react';
-import { createChart, ColorType, IChartApi } from 'lightweight-charts';
+import { createChart, ColorType, IChartApi, LineSeries } from 'lightweight-charts';
 import { createClient } from '@supabase/supabase-js';
 
 // 1. Initialize Supabase Client
@@ -51,7 +51,8 @@ export default function Dashboard() {
     });
     chartRef.current = chart;
 
-    const executionSeries = chart.addLineSeries({
+    // COMPILER FIX: Updated syntax for lightweight-charts v4+
+    const executionSeries = chart.addSeries(LineSeries, {
       color: '#38bdf8', 
       lineWidth: 2,
       crosshairMarkerVisible: true,
