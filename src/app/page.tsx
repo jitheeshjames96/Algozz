@@ -96,7 +96,7 @@ export default function Dashboard() {
           })).sort((a: any, b: any) => a.time - b.time);
 
           if (markers.length > 0) {
-            candlestickSeries.setMarkers(markers);
+            (candlestickSeries as any).setMarkers(markers);
           }
         }
       } catch (err) {
