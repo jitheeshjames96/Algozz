@@ -9,6 +9,8 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://znejercxaxy
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpuZWplcmN4YXh5Z25jb3R2cXBhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk3MDE5NTAsImV4cCI6MjA5NTI3Nzk1MH0.pFhQ30-ZGf0af6AdvW1mm0hx66BsRqtlG1muGYLIzBc";
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+
 interface Trade {
   id: string;
   symbol: string;
@@ -160,7 +162,7 @@ export default function Dashboard() {
   // Fetch charts & market details from FastAPI backend
   const loadChartAndState = async (resVal = resolution) => {
     try {
-      const res = await fetch(`http://localhost:8000/api/chart-data?resolution=${resVal}`);
+      const res = await fetch(`${BACKEND_URL}/api/chart-data?resolution=${resVal}`);
       const data = await res.json();
       
       if (data && data.candles && candleSeriesRef.current) {
@@ -223,7 +225,7 @@ export default function Dashboard() {
   // Check market hours status locally / backend
   const checkMarketState = async () => {
     try {
-      const res = await fetch("http://localhost:8000/api/live-state");
+      const res = await fetch(`${BACKEND_URL}/api/live-state`);
       const data = await res.json();
       if (data && data.metrics) {
         setMarketState(data.metrics.safety_state === "DAILY_LOSS_HALT" ? "CLOSED" : "OPEN");
