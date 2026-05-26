@@ -52,13 +52,13 @@ export default function Dashboard() {
   });
   
   const [trades, setTrades] = useState<Trade[]>([]);
-  const [activeTab, setActiveTab] = useState<'LEDGER' | 'LOGS'>('LEDGER');
+  const [activeChartTab, setActiveChartTab] = useState<'PRICE' | 'EQUITY'>('PRICE');
   const [expandedTradeId, setExpandedTradeId] = useState<string | null>(null);
-  const [logs, setLogs] = useState<any[]>([]);
   const [isLive, setIsLive] = useState(false);
   const [marketState, setMarketState] = useState<'OPEN' | 'CLOSED'>('CLOSED');
   const [copiedHash, setCopiedHash] = useState<string | null>(null);
   const [currentTimeStr, setCurrentTimeStr] = useState<string>("");
+  const [liveSpotPrice, setLiveSpotPrice] = useState<number>(22660.00);
 
   // Chart instances
   const mainChartRef = useRef<any>(null);
@@ -91,14 +91,14 @@ export default function Dashboard() {
   const loadData = async () => {
     try {
       // 1. Fetch metrics from Supabase /account_summary
-      const { data: summaryData, error: summaryError } = await supabase
+      const { data: summaryData } = await supabase
         .from('account_summary')
         .select('*')
         .eq('id', 1)
         .single();
 
       // 2. Fetch trades from Supabase /trades
-      const { data: tradesData, error: tradesError } = await supabase
+      const { data: tradesData } = await supabase
         .from('trades')
         .select('*')
         .order('entry_time', { ascending: false });
@@ -106,7 +106,7 @@ export default function Dashboard() {
       if (tradesData) {
         setTrades(tradesData);
         
-        // Calculate Win Rate and active allocations locally for redundancy
+        // Calculate Win Rate and active allocations locally
         const closed = tradesData.filter(t => t.status === 'CLOSED');
         const wins = closed.filter(t => Number(t.pnl || 0) > 0);
         const calculatedWinRate = closed.length > 0 ? (wins.length / closed.length) * 100 : 0.0;
@@ -117,7 +117,7 @@ export default function Dashboard() {
           setMetrics({
             account_capital: Number(summaryData.net_equity),
             win_rate: Number(calculatedWinRate.toFixed(2)),
-            net_profit: Number(summaryData.net_equity) - 100000.0,
+            net_profit: realizedPnl,
             active_allocations: active,
             safety_state: realizedPnl <= -2000.0 ? "DAILY_LOSS_HALT" : "SAFE",
             daily_realized_pnl: Number(summaryData.daily_realized_pnl),
@@ -138,16 +138,12 @@ export default function Dashboard() {
 
         // Draw Equity Curve
         updateEquityCurveChart(tradesData);
-      }
-
-      // 3. Fetch logs for legacy tab
-      const { data: logsData } = await supabase
-        .from('execution_logs')
-        .select('*')
-        .order('timestamp', { ascending: false })
-        .limit(20);
-      if (logsData) {
-        setLogs(logsData);
+        
+        // Update live spot price from open trade if exists
+        const openTrade = tradesData.find(t => t.status === 'OPEN');
+        if (openTrade) {
+          setLiveSpotPrice(Number(openTrade.entry_price));
+        }
       }
     } catch (e) {
       console.error("Error loading data:", e);
@@ -202,6 +198,11 @@ export default function Dashboard() {
           }));
         candleSeriesRef.current.setMarkers(markers);
         setIsLive(true);
+        
+        // Update live spot price from latest candle close
+        if (candles.length > 0) {
+          setLiveSpotPrice(Number(candles[candles.length - 1].close));
+        }
       }
     } catch (e) {
       console.warn("Backend API not reachable. Generating simulated chart data locally.");
@@ -215,15 +216,13 @@ export default function Dashboard() {
     try {
       const res = await fetch("http://localhost:8000/api/live-state");
       const data = await res.json();
-      // If we fetch metrics, map them
       if (data && data.metrics) {
         setMarketState(data.metrics.safety_state === "DAILY_LOSS_HALT" ? "CLOSED" : "OPEN");
       }
     } catch (e) {
-      // Fallback local calculation for Indian market hours (09:15 - 15:30 IST, Mon-Fri)
       const options = { timeZone: 'Asia/Kolkata' };
       const kolkataTime = new Date(new Date().toLocaleString('en-US', options));
-      const day = kolkataTime.getDay(); // 0 is Sunday, 6 is Saturday
+      const day = kolkataTime.getDay();
       const hour = kolkataTime.getHours();
       const minute = kolkataTime.getMinutes();
       
@@ -244,25 +243,25 @@ export default function Dashboard() {
     let mockFvgBottom = [];
     let mockMarkers = [];
 
-    let basePrice = 22600.0;
-    let time = Math.floor(Date.now() / 1000) - 150 * 900; // 150 candles back (15m interval)
+    let basePrice = 22660.0;
+    let time = Math.floor(Date.now() / 1000) - 150 * 60; // 150 candles back (1m resolution fallback)
 
     for (let i = 0; i < 150; i++) {
       const open = basePrice;
-      const high = open + Math.random() * 25 + 5;
-      const low = open - Math.random() * 25 - 5;
+      const high = open + Math.random() * 8 + 2;
+      const low = open - Math.random() * 8 - 2;
       const close = low + Math.random() * (high - low);
       
       mockCandles.push({ time: time as any, open, high, low, close });
       
       // Seed EMA
-      const ema = basePrice * 0.998 + (i * 0.1);
+      const ema = basePrice * 0.999 + (i * 0.05);
       mockEma.push({ time: time as any, value: ema });
       
       // FVG
       if (i % 25 === 0) {
-        mockFvgTop.push({ time: time as any, value: high + 10 });
-        mockFvgBottom.push({ time: time as any, value: low - 5 });
+        mockFvgTop.push({ time: time as any, value: high + 4 });
+        mockFvgBottom.push({ time: time as any, value: low - 2 });
         mockMarkers.push({
           time: time as any,
           position: 'belowBar' as const,
@@ -273,7 +272,7 @@ export default function Dashboard() {
       }
       
       basePrice = close;
-      time += 900;
+      time += 60;
     }
 
     candleSeriesRef.current.setData(mockCandles);
@@ -281,20 +280,22 @@ export default function Dashboard() {
     if (fvgTopSeriesRef.current) fvgTopSeriesRef.current.setData(mockFvgTop);
     if (fvgBottomSeriesRef.current) fvgBottomSeriesRef.current.setData(mockFvgBottom);
     candleSeriesRef.current.setMarkers(mockMarkers);
+    
+    // Set live spot price
+    setLiveSpotPrice(Number(basePrice.toFixed(2)));
   };
 
   // Render/Update the Equity Curve Chart
   const updateEquityCurveChart = (tradesList: Trade[]) => {
     if (!equityAreaSeriesRef.current) return;
 
-    // Filter closed trades and sort chronologically (oldest to newest) to plot curve
     const closed = [...tradesList]
       .filter(t => t.status === 'CLOSED')
       .sort((a, b) => new Date(a.exit_time || "").getTime() - new Date(b.exit_time || "").getTime());
 
     let startingEquity = 100000.00;
     const equityCurveData = [{
-      time: Math.floor((Date.now() - 3600 * 24 * 7 * 1000) / 1000) as any, // start 1 week ago
+      time: Math.floor((Date.now() - 3600 * 24 * 7 * 1000) / 1000) as any,
       value: startingEquity
     }];
 
@@ -306,7 +307,6 @@ export default function Dashboard() {
       });
     });
 
-    // If no closed trades, push current time to avoid empty plot
     if (equityCurveData.length === 1) {
       equityCurveData.push({
         time: Math.floor(Date.now() / 1000) as any,
@@ -329,8 +329,8 @@ export default function Dashboard() {
           textColor: '#94a3b8',
         },
         grid: {
-          vertLines: { color: 'rgba(30, 41, 59, 0.3)' },
-          horzLines: { color: 'rgba(30, 41, 59, 0.3)' },
+          vertLines: { color: 'rgba(30, 41, 59, 0.2)' },
+          horzLines: { color: 'rgba(30, 41, 59, 0.2)' },
         },
         width: chartContainerRef.current.clientWidth,
         height: 380,
@@ -361,14 +361,14 @@ export default function Dashboard() {
       const fvgTopSeries = chart.addSeries(LineSeries, {
         color: '#06b6d4',
         lineWidth: 1,
-        lineStyle: 2, // Dashed
+        lineStyle: 2,
         title: 'FVG High',
       });
 
       const fvgBottomSeries = chart.addSeries(LineSeries, {
         color: '#0891b2',
         lineWidth: 1,
-        lineStyle: 2, // Dashed
+        lineStyle: 2,
         title: 'FVG Low',
       });
 
@@ -394,11 +394,11 @@ export default function Dashboard() {
           textColor: '#94a3b8',
         },
         grid: {
-          vertLines: { color: 'rgba(30, 41, 59, 0.2)' },
-          horzLines: { color: 'rgba(30, 41, 59, 0.2)' },
+          vertLines: { color: 'rgba(30, 41, 59, 0.15)' },
+          horzLines: { color: 'rgba(30, 41, 59, 0.15)' },
         },
         width: equityChartContainerRef.current.clientWidth,
-        height: 180,
+        height: 380, // matched to candlestick height
         timeScale: {
           timeVisible: true,
           borderColor: '#1e293b',
@@ -409,15 +409,10 @@ export default function Dashboard() {
       });
 
       const areaSeries = chart.addSeries(AreaSeries, {
-        topColor: 'rgba(6, 182, 212, 0.4)',
+        topColor: 'rgba(6, 182, 212, 0.35)',
         bottomColor: 'rgba(6, 182, 212, 0.0)',
         lineColor: '#06b6d4',
         lineWidth: 2,
-        priceFormat: {
-          type: 'price',
-          precision: 2,
-          minMove: 0.01,
-        }
       });
 
       equityChartRef.current = chart;
@@ -436,14 +431,14 @@ export default function Dashboard() {
     loadChartAndState();
     checkMarketState();
 
-    // 4. Supabase Real-Time Subscriptions
+    // 3. Supabase Real-Time Subscriptions
     const tradesChannel = supabase
       .channel('trades-realtime-channel')
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'trades' },
         (payload) => {
-          console.log('🔔 Trades updated:', payload);
+          console.log('🔔 Real-time Trade Event:', payload);
           loadData();
         }
       )
@@ -455,7 +450,7 @@ export default function Dashboard() {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'account_summary' },
         (payload) => {
-          console.log('🔔 Metrics updated:', payload);
+          console.log('🔔 Real-time Account summary Event:', payload);
           loadData();
         }
       )
@@ -465,7 +460,7 @@ export default function Dashboard() {
     const pollInterval = setInterval(() => {
       loadChartAndState();
       checkMarketState();
-    }, 5000);
+    }, 4000);
 
     return () => {
       clearInterval(pollInterval);
@@ -480,40 +475,48 @@ export default function Dashboard() {
     setTimeout(() => setCopiedHash(null), 2000);
   };
 
+  const openPosition = trades.find(t => t.status === 'OPEN');
+  
+  // Calculate live unrealized pnl
+  let liveUnrealizedPnl = 0.00;
+  if (openPosition) {
+    const delta = openPosition.direction === 'BUY' 
+      ? liveSpotPrice - Number(openPosition.entry_price)
+      : Number(openPosition.entry_price) - liveSpotPrice;
+    liveUnrealizedPnl = delta * openPosition.quantity;
+  }
+
   if (!mounted) {
     return (
-      <div className="flex h-screen w-full items-center justify-center bg-[#020617] text-cyan-400 font-mono">
+      <div className="flex h-screen w-full items-center justify-center bg-[#02050f] text-cyan-400 font-mono">
         <div className="text-center">
           <div className="animate-spin rounded-full h-10 w-10 border-t-2 border-b-2 border-cyan-500 mx-auto mb-4"></div>
-          <div>BIFROST SYSTEM STARTING...</div>
+          <div className="tracking-widest uppercase text-xs">BIFROST SYSTEM INITIALIZING...</div>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-[#02050f] text-slate-100 font-sans p-4 md:p-6 selection:bg-cyan-500/30 selection:text-cyan-200">
+    <div className="min-h-screen bg-[#02050f] text-slate-200 font-sans p-4 md:p-6 selection:bg-cyan-500/30 selection:text-cyan-200">
       {/* 1. Cyber Dashboard Header */}
-      <header className="relative flex flex-col md:flex-row items-center justify-between border border-slate-800 bg-[#070b15]/95 backdrop-blur-md rounded-2xl p-4 md:p-6 mb-6 shadow-2xl overflow-hidden">
-        {/* Decorative Grid Light */}
+      <header className="relative flex flex-col md:flex-row items-center justify-between border border-slate-800 bg-[#070b15]/95 backdrop-blur-md rounded-2xl p-4 md:p-5 mb-6 shadow-2xl overflow-hidden">
         <div className="absolute top-0 right-0 w-96 h-20 bg-cyan-500/10 rounded-full blur-3xl -z-10" />
-        <div className="absolute bottom-0 left-0 w-80 h-20 bg-emerald-500/5 rounded-full blur-3xl -z-10" />
-
+        
         <div className="flex items-center gap-4 mb-4 md:mb-0">
-          <div className="relative flex items-center justify-center h-12 w-12 rounded-xl bg-gradient-to-tr from-cyan-600 to-indigo-700 shadow-lg shadow-cyan-900/30">
+          <div className="relative flex items-center justify-center h-11 w-11 rounded-xl bg-gradient-to-tr from-cyan-600 to-indigo-700 shadow-lg shadow-cyan-900/30">
             <span className="text-xl font-black text-white">B</span>
             <div className="absolute inset-0 rounded-xl border border-cyan-400/20 animate-pulse" />
           </div>
           <div>
-            <h1 className="text-lg md:text-xl font-bold tracking-wider bg-gradient-to-r from-slate-100 via-cyan-100 to-cyan-400 bg-clip-text text-transparent">
+            <h1 className="text-lg font-bold tracking-wider bg-gradient-to-r from-slate-100 via-cyan-100 to-cyan-400 bg-clip-text text-transparent">
               BIFROST // QUANT_ENGINE
             </h1>
-            <p className="text-xs text-slate-400 font-mono mt-0.5">SMC INSTITUTIONAL INTRADAY DASHBOARD</p>
+            <p className="text-[10px] text-slate-400 font-mono mt-0.5">SMC ALGORITHMIC TRADING TERMINAL</p>
           </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-3 font-mono text-xs">
-          {/* Market Status Badge */}
           <div className="flex items-center gap-2 border border-slate-800 bg-slate-900/40 px-3 py-1.5 rounded-lg">
             <span className="text-slate-400">MARKET:</span>
             <div className="flex items-center gap-1.5">
@@ -524,20 +527,18 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Connection Status */}
           <div className="flex items-center gap-2 border border-slate-800 bg-slate-900/40 px-3 py-1.5 rounded-lg">
             <span className="text-slate-400">ENGINE:</span>
             <div className="flex items-center gap-1.5">
-              <span className={`inline-block h-2 w-2 rounded-full ${isLive ? 'bg-emerald-400' : 'bg-cyan-400 animate-pulse'}`} />
+              <span className={`inline-block h-2 w-2 rounded-full ${isLive ? 'bg-emerald-400 animate-pulse' : 'bg-cyan-400'}`} />
               <span className={isLive ? 'text-emerald-400' : 'text-cyan-400'}>
                 {isLive ? 'LIVE' : 'SIMULATION'}
               </span>
             </div>
           </div>
 
-          {/* Clock Display */}
           <div className="border border-slate-800 bg-slate-900/40 px-3 py-1.5 rounded-lg text-cyan-400 font-semibold shadow-inner">
-            {currentTimeStr || "00:00:00 IST"}
+            {currentTimeStr}
           </div>
         </div>
       </header>
@@ -545,293 +546,282 @@ export default function Dashboard() {
       {/* 2. Top-Line Metrics Grid */}
       <section className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
         {/* Net Equity */}
-        <div className="relative border border-slate-800 bg-[#070b15]/80 hover:bg-[#070b15]/90 rounded-2xl p-4 shadow-xl transition-all duration-200 group">
-          <div className="absolute top-3 right-3 text-slate-500 group-hover:text-cyan-400 transition-colors">
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-          </div>
-          <span className="text-slate-500 font-mono text-[10px] uppercase tracking-wider block mb-1">Net Equity</span>
+        <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
+          <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Net Equity</span>
           <span className="text-xl md:text-2xl font-black text-slate-100 font-mono">
             ₹{metrics.account_capital.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
           </span>
-          <div className="flex items-center gap-1 mt-1 text-[11px]">
-            <span className={metrics.net_profit >= 0 ? "text-emerald-400 font-bold" : "text-rose-400 font-bold"}>
-              {metrics.net_profit >= 0 ? "+" : ""}
-              {((metrics.net_profit / 100000) * 100).toFixed(2)}%
-            </span>
-            <span className="text-slate-500">cumulative return</span>
+          <div className="text-[10px] text-slate-500 mt-1 font-mono">
+            Base: ₹1,00,000.00
           </div>
         </div>
 
-        {/* Daily realized pnl */}
-        <div className="relative border border-slate-800 bg-[#070b15]/80 hover:bg-[#070b15]/90 rounded-2xl p-4 shadow-xl transition-all duration-200 group">
-          <span className="text-slate-500 font-mono text-[10px] uppercase tracking-wider block mb-1">Daily Realized P&L</span>
+        {/* Realized P&L */}
+        <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
+          <div className="absolute top-3 right-3">
+            <span className="text-[9px] font-bold font-mono px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">BOOKED</span>
+          </div>
+          <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Realized P&L</span>
           <span className={`text-xl md:text-2xl font-black font-mono ${metrics.daily_realized_pnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
-            ₹{metrics.daily_realized_pnl >= 0 ? "+" : ""}
-            {metrics.daily_realized_pnl.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+            {metrics.daily_realized_pnl >= 0 ? "+" : ""}
+            ₹{metrics.daily_realized_pnl.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
           </span>
-          <div className="flex items-center gap-1 mt-1 text-[11px]">
-            <span className={metrics.daily_realized_pnl >= 0 ? "text-emerald-400" : "text-rose-400"}>
-              {metrics.daily_realized_pnl >= 0 ? "Profit" : "Loss"}
-            </span>
-            <span className="text-slate-500">since midnight</span>
+          <div className="text-[10px] text-slate-500 mt-1 font-mono">
+            Closed trades profit/loss
           </div>
         </div>
 
-        {/* Win Rate */}
-        <div className="relative border border-slate-800 bg-[#070b15]/80 hover:bg-[#070b15]/90 rounded-2xl p-4 shadow-xl transition-all duration-200 group">
-          <div className="absolute top-3 right-3 text-slate-500 group-hover:text-cyan-400 transition-colors">
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+        {/* Unrealized P&L */}
+        <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
+          <div className="absolute top-3 right-3">
+            <span className="text-[9px] font-bold font-mono px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/25 animate-pulse">LIVE</span>
           </div>
-          <span className="text-slate-500 font-mono text-[10px] uppercase tracking-wider block mb-1">Win Rate</span>
-          <span className="text-xl md:text-2xl font-black text-cyan-400 font-mono">{metrics.win_rate}%</span>
-          <div className="flex items-center gap-1 mt-1 text-[11px]">
-            <span className="text-emerald-400 font-bold">
-              {metrics.total_trades > 0 ? Math.round((metrics.win_rate / 100) * metrics.total_trades) : 0} wins
-            </span>
-            <span className="text-slate-500">out of {metrics.total_trades} trades</span>
-          </div>
-        </div>
-
-        {/* Active Allocations */}
-        <div className="relative border border-slate-800 bg-[#070b15]/80 hover:bg-[#070b15]/90 rounded-2xl p-4 shadow-xl transition-all duration-200 group">
-          <span className="text-slate-500 font-mono text-[10px] uppercase tracking-wider block mb-1">Active Positions</span>
-          <span className="text-xl md:text-2xl font-black text-slate-100 font-mono">{metrics.active_allocations}</span>
-          <div className="flex items-center gap-1 mt-1 text-[11px]">
-            <span className={`font-semibold ${metrics.active_allocations > 0 ? "text-cyan-400" : "text-slate-400"}`}>
-              {metrics.active_allocations > 0 ? "Position Open" : "Idle"}
-            </span>
-            <span className="text-slate-500">monitoring ticks</span>
-          </div>
-        </div>
-
-        {/* Safety Risk State */}
-        <div className="relative border border-slate-800 bg-[#070b15]/80 hover:bg-[#070b15]/90 rounded-2xl p-4 shadow-xl transition-all duration-200 col-span-2 lg:col-span-1">
-          <span className="text-slate-500 font-mono text-[10px] uppercase tracking-wider block mb-1">Risk System Status</span>
-          <span className={`text-lg md:text-xl font-bold font-mono inline-flex items-center gap-1.5 mt-0.5 ${metrics.safety_state === 'SAFE' ? 'text-emerald-400' : 'text-rose-400 font-black animate-pulse'}`}>
-            <span className={`h-2.5 w-2.5 rounded-full ${metrics.safety_state === 'SAFE' ? 'bg-emerald-500' : 'bg-rose-500'}`} />
-            {metrics.safety_state}
+          <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Unrealized P&L</span>
+          <span className={`text-xl md:text-2xl font-black font-mono ${liveUnrealizedPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+            {liveUnrealizedPnl >= 0 ? "+" : ""}
+            ₹{liveUnrealizedPnl.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
           </span>
-          <div className="text-[11px] text-slate-400 mt-2 font-mono">
-            Loss Limit: ₹2,000.00
+          <div className="text-[10px] text-slate-500 mt-1 font-mono">
+            Active position float
+          </div>
+        </div>
+
+        {/* Today's Session */}
+        <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
+          <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Today's Session</span>
+          <span className="text-xl md:text-2xl font-black text-slate-100 font-mono">
+            {metrics.total_trades}
+          </span>
+          <div className="text-[10px] text-slate-500 mt-1 font-mono flex items-center justify-between">
+            <span>Total Trades</span>
+            <span className="text-cyan-400 font-semibold">{metrics.win_rate}% Win Rate</span>
+          </div>
+        </div>
+
+        {/* Market Exposure */}
+        <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl col-span-2 lg:col-span-1">
+          <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Market Exposure</span>
+          <span className="text-xl md:text-2xl font-black text-slate-100 font-mono">
+            {openPosition ? openPosition.quantity : 0}
+          </span>
+          <div className="text-[10px] mt-1 font-mono flex items-center justify-between">
+            <span className="text-slate-500">Contracts</span>
+            <span className={metrics.safety_state === 'SAFE' ? 'text-emerald-400 font-semibold' : 'text-rose-400 font-black animate-pulse'}>
+              {metrics.safety_state === 'SAFE' ? 'SAFE' : 'HALT'}
+            </span>
           </div>
         </div>
       </section>
 
-      {/* 3. Double Chart Visualization Panel */}
-      <section className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
-        {/* NIFTY50 Candlestick Chart (Occupies 2 columns) */}
-        <div className="border border-slate-800 bg-[#070b15]/95 rounded-2xl p-4 shadow-2xl col-span-1 lg:col-span-2">
+      {/* 3. Split Screen Brokerage Layout */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        
+        {/* LEFT COLUMN: Candlestick/Equity Curve + Open Positions (2/3 width) */}
+        <div className="lg:col-span-2 flex flex-col gap-6">
+          
+          {/* Main Chart Container */}
+          <div className="border border-slate-800 bg-[#070b15]/95 rounded-2xl p-4 shadow-2xl flex flex-col">
+            <div className="flex items-center justify-between border-b border-slate-800/80 pb-3 mb-4">
+              <div className="flex gap-4">
+                <button 
+                  onClick={() => setActiveChartTab('PRICE')}
+                  className={`text-xs font-bold font-mono tracking-widest pb-1 border-b-2 transition-colors cursor-pointer ${activeChartTab === 'PRICE' ? 'border-cyan-400 text-cyan-400' : 'border-transparent text-slate-400 hover:text-slate-200'}`}
+                >
+                  MARKET TRAJECTORY (NIFTY50)
+                </button>
+                <button 
+                  onClick={() => setActiveChartTab('EQUITY')}
+                  className={`text-xs font-bold font-mono tracking-widest pb-1 border-b-2 transition-colors cursor-pointer ${activeChartTab === 'EQUITY' ? 'border-cyan-400 text-cyan-400' : 'border-transparent text-slate-400 hover:text-slate-200'}`}
+                >
+                  EQUITY TRAJECTORY
+                </button>
+              </div>
+              <div className="text-[10px] font-mono text-cyan-400 bg-slate-900 border border-slate-800 px-2 py-0.5 rounded">
+                {activeChartTab === 'PRICE' ? '1m resolution' : 'cum PnL curve'}
+              </div>
+            </div>
+
+            {/* Price Candlestick Chart */}
+            <div className={activeChartTab === 'PRICE' ? 'block' : 'hidden'}>
+              <div ref={chartContainerRef} className="w-full h-[380px] rounded-xl overflow-hidden bg-[#090d16]" />
+            </div>
+
+            {/* Equity Curve Chart */}
+            <div className={activeChartTab === 'EQUITY' ? 'block' : 'hidden'}>
+              <div ref={equityChartContainerRef} className="w-full h-[380px] rounded-xl overflow-hidden bg-[#090d16]" />
+            </div>
+          </div>
+
+          {/* Live Open Positions Panel */}
+          <div className="border border-slate-800 bg-[#070b15]/95 rounded-2xl p-4 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-800/80 pb-3 mb-3">
+              <div className="flex items-center gap-2">
+                <span className="inline-block h-2 w-2 rounded-full bg-cyan-400 animate-pulse" />
+                <h2 className="text-xs font-bold font-mono tracking-widest text-slate-400 uppercase">LIVE OPEN POSITIONS</h2>
+              </div>
+            </div>
+
+            {!openPosition ? (
+              <div className="flex flex-col items-center justify-center py-10 border border-dashed border-slate-850 rounded-xl bg-slate-900/10">
+                <div className="h-8 w-8 rounded-full border border-slate-700/60 flex items-center justify-center text-slate-500 mb-2">✓</div>
+                <p className="text-[11px] text-slate-500 font-mono tracking-wider">
+                  No active positions. Scanning for algorithmic setups.
+                </p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse font-mono text-[11px]">
+                  <thead>
+                    <tr className="border-b border-slate-800 text-slate-500 uppercase tracking-widest text-[9px]">
+                      <th className="py-2 px-2">Symbol</th>
+                      <th className="py-2 px-2">Direction</th>
+                      <th className="py-2 px-2">Quantity</th>
+                      <th className="py-2 px-2">Entry Price</th>
+                      <th className="py-2 px-2">Live Price</th>
+                      <th className="py-2 px-2 text-right">Float P&L</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr className="border-b border-slate-850 hover:bg-slate-900/30">
+                      <td className="py-3 px-2 font-bold text-slate-200">{openPosition.symbol}</td>
+                      <td className="py-3 px-2">
+                        <span className={`px-1.5 py-0.5 rounded font-bold text-[9px] ${openPosition.direction === 'BUY' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'}`}>
+                          {openPosition.direction}
+                        </span>
+                      </td>
+                      <td className="py-3 px-2 text-slate-300 font-bold">{openPosition.quantity}</td>
+                      <td className="py-3 px-2 text-slate-300">₹{Number(openPosition.entry_price).toFixed(2)}</td>
+                      <td className="py-3 px-2 text-cyan-400 font-bold animate-pulse">₹{liveSpotPrice.toFixed(2)}</td>
+                      <td className={`py-3 px-2 text-right font-black ${liveUnrealizedPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                        ₹{liveUnrealizedPnl >= 0 ? '+' : ''}{liveUnrealizedPnl.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* RIGHT COLUMN: Interactive Ledger (1/3 width) */}
+        <div className="border border-slate-800 bg-[#070b15]/95 rounded-2xl p-4 shadow-2xl h-fit">
           <div className="flex items-center justify-between border-b border-slate-800/80 pb-3 mb-4">
             <div className="flex items-center gap-2">
               <span className="inline-block h-3 w-3 rounded-full bg-cyan-500" />
-              <h2 className="text-sm font-semibold tracking-wider font-mono">NIFTY 50 SPOT PRICE INTERVAL (15M)</h2>
+              <h2 className="text-xs font-bold font-mono tracking-widest text-slate-400 uppercase">INTERACTIVE LEDGER</h2>
             </div>
-            <div className="flex items-center gap-3 font-mono text-[11px] text-slate-400 bg-slate-900/60 border border-slate-800/80 rounded-lg px-3 py-1">
-              <span className="flex items-center gap-1">
-                <span className="h-2 w-2 bg-[#eab308] rounded-full" /> EMA 50
-              </span>
-              <span className="flex items-center gap-1">
-                <span className="h-2 w-2 bg-[#06b6d4] rounded-full" /> Bullish FVG
-              </span>
-            </div>
-          </div>
-          
-          {/* Main Chart Mount Div */}
-          <div ref={chartContainerRef} className="w-full h-[380px] rounded-xl overflow-hidden bg-[#090d16]" />
-        </div>
-
-        {/* Equity Curve & Performance Metrics (Occupies 1 column) */}
-        <div className="flex flex-col gap-6 col-span-1">
-          {/* Cumulative Equity Curve */}
-          <div className="border border-slate-800 bg-[#070b15]/95 rounded-2xl p-4 shadow-2xl flex-1 flex flex-col justify-between">
-            <div>
-              <div className="flex items-center gap-2 border-b border-slate-800/80 pb-3 mb-3">
-                <span className="inline-block h-3 w-3 rounded-full bg-[#06b6d4]" />
-                <h2 className="text-sm font-semibold tracking-wider font-mono">CUMULATIVE EQUITY CURVE (INR)</h2>
-              </div>
-              <p className="text-xs text-slate-400 mb-2 font-mono">Net equity trajectory over closed trades ledger.</p>
-            </div>
-            
-            {/* Equity Curve Mount */}
-            <div ref={equityChartContainerRef} className="w-full h-[180px] rounded-xl overflow-hidden bg-[#090d16] mb-2" />
+            <span className="text-[10px] text-slate-500 font-mono">click row to expand</span>
           </div>
 
-          {/* Quick Stats Panel */}
-          <div className="border border-slate-800 bg-[#070b15]/95 rounded-2xl p-4 shadow-2xl">
-            <h2 className="text-xs font-semibold tracking-widest font-mono text-slate-400 mb-3 uppercase">RISK CONSOLE PANEL</h2>
-            <div className="grid grid-cols-2 gap-3 text-xs font-mono">
-              <div className="bg-slate-900/40 border border-slate-850 p-2 rounded-lg">
-                <span className="text-[10px] text-slate-500 block mb-1">Risk per Trade</span>
-                <span className="text-slate-300 font-bold">2.0%</span>
-              </div>
-              <div className="bg-slate-900/40 border border-slate-850 p-2 rounded-lg">
-                <span className="text-[10px] text-slate-500 block mb-1">Max Daily Drawdown</span>
-                <span className="text-slate-300 font-bold">₹2,000.00</span>
-              </div>
-              <div className="bg-slate-900/40 border border-slate-850 p-2 rounded-lg">
-                <span className="text-[10px] text-slate-500 block mb-1">Lot Size</span>
-                <span className="text-slate-300 font-bold">25 Qty</span>
-              </div>
-              <div className="bg-slate-900/40 border border-slate-850 p-2 rounded-lg">
-                <span className="text-[10px] text-slate-500 block mb-1">ATM Option Delta</span>
-                <span className="text-slate-300 font-bold">1.0</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* 4. Ledger and System Activity log */}
-      <section className="border border-slate-800 bg-[#070b15]/95 rounded-2xl p-4 md:p-6 shadow-2xl mb-6">
-        <div className="flex items-center justify-between border-b border-slate-800 pb-3 mb-4">
-          <div className="flex gap-4">
-            <button 
-              onClick={() => setActiveTab('LEDGER')}
-              className={`text-xs font-bold font-mono tracking-widest pb-3 border-b-2 transition-colors cursor-pointer ${activeTab === 'LEDGER' ? 'border-cyan-400 text-cyan-400' : 'border-transparent text-slate-400 hover:text-slate-200'}`}
-            >
-              INTRADAY TRADES LEDGER
-            </button>
-            <button 
-              onClick={() => setActiveTab('LOGS')}
-              className={`text-xs font-bold font-mono tracking-widest pb-3 border-b-2 transition-colors cursor-pointer ${activeTab === 'LOGS' ? 'border-cyan-400 text-cyan-400' : 'border-transparent text-slate-400 hover:text-slate-200'}`}
-            >
-              SYSTEM AUDIT LOGS
-            </button>
-          </div>
-        </div>
-
-        {/* A. Trades Ledger View */}
-        {activeTab === 'LEDGER' && (
-          <div className="overflow-x-auto">
+          {/* Ledger scrollable container */}
+          <div className="flex flex-col gap-3 max-h-[620px] overflow-y-auto pr-1 scrollbar-thin">
             {trades.length === 0 ? (
-              <div className="text-center py-10 text-slate-500 font-mono text-sm">
-                NO TRADES RECORDED IN ACTIVE LEDGER. RUN THE ENGINE TO SIMULATE TRADES.
+              <div className="text-center py-12 text-slate-550 font-mono text-xs border border-dashed border-slate-850 rounded-xl bg-slate-900/10">
+                NO TRADES IN ACTIVE LEDGER.
               </div>
             ) : (
-              <table className="w-full text-left border-collapse font-mono text-xs">
-                <thead>
-                  <tr className="border-b border-slate-800 text-slate-500 text-[10px]">
-                    <th className="py-3 px-2">ENTRY TIME</th>
-                    <th className="py-3 px-2">SYMBOL</th>
-                    <th className="py-3 px-2">DIRECTION</th>
-                    <th className="py-3 px-2">QTY</th>
-                    <th className="py-3 px-2 text-right">ENTRY</th>
-                    <th className="py-3 px-2 text-right">EXIT</th>
-                    <th className="py-3 px-2 text-right">REALIZED P&L</th>
-                    <th className="py-3 px-2 text-center">STATUS</th>
-                    <th className="py-3 px-2 text-center">METADATA</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {trades.map((t) => {
-                    const isExpanded = expandedTradeId === t.id;
-                    const dateStr = new Date(t.entry_time).toLocaleString('en-US', {
-                      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
-                    });
-                    
-                    return (
-                      <>
-                        {/* Table Row */}
-                        <tr 
-                          key={t.id} 
-                          onClick={() => setExpandedTradeId(isExpanded ? null : t.id)}
-                          className="border-b border-slate-850 hover:bg-slate-900/40 cursor-pointer transition-colors"
-                        >
-                          <td className="py-4 px-2 text-slate-400">{dateStr}</td>
-                          <td className="py-4 px-2 font-bold text-slate-200">{t.symbol}</td>
-                          <td className="py-4 px-2">
-                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${t.direction === 'BUY' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'}`}>
-                              {t.direction}
-                            </span>
-                          </td>
-                          <td className="py-4 px-2 text-slate-300 font-bold">{t.quantity}</td>
-                          <td className="py-4 px-2 text-right text-slate-300">₹{Number(t.entry_price).toFixed(2)}</td>
-                          <td className="py-4 px-2 text-right text-slate-300">
-                            {t.exit_price ? `₹${Number(t.exit_price).toFixed(2)}` : '—'}
-                          </td>
-                          <td className={`py-4 px-2 text-right font-black ${Number(t.pnl || 0) >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
-                            {t.status === 'CLOSED' ? `₹${Number(t.pnl).toLocaleString('en-IN', { minimumFractionDigits: 2 })}` : 'unrealized'}
-                          </td>
-                          <td className="py-4 px-2 text-center">
-                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${t.status === 'CLOSED' ? 'bg-slate-800 text-slate-300' : 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 animate-pulse'}`}>
-                              {t.status}
-                            </span>
-                          </td>
-                          <td className="py-4 px-2 text-center text-slate-500">
-                            {isExpanded ? '▲ hide' : '▼ expand'}
-                          </td>
-                        </tr>
+              trades.map((t) => {
+                const isExpanded = expandedTradeId === t.id;
+                const formattedTime = new Date(t.entry_time).toLocaleTimeString('en-US', {
+                  hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+                });
 
-                        {/* Expanded details row */}
-                        {isExpanded && (
-                          <tr className="bg-slate-900/30">
-                            <td colSpan={9} className="py-3 px-4 border-b border-slate-850">
-                              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 py-2 px-2 text-xs">
-                                <div>
-                                  <span className="text-[10px] text-slate-500 block mb-1">Execution Hash</span>
-                                  <div className="flex items-center gap-2">
-                                    <span className="font-mono text-cyan-400 font-bold bg-slate-900 px-2 py-1 rounded border border-slate-800">
-                                      {t.execution_hash || "0x00000000"}
-                                    </span>
-                                    <button 
-                                      onClick={(e) => { e.stopPropagation(); copyToClipboard(t.execution_hash || ""); }}
-                                      className="text-slate-400 hover:text-white cursor-pointer bg-slate-800 hover:bg-slate-755 p-1 rounded transition-colors"
-                                      title="Copy Hash"
-                                    >
-                                      {copiedHash === t.execution_hash ? 'copied!' : 'copy'}
-                                    </button>
-                                  </div>
-                                </div>
-                                
-                                <div>
-                                  <span className="text-[10px] text-slate-500 block mb-1">Slip Offset (Slippage)</span>
-                                  <span className="font-mono text-slate-300 font-bold">
-                                    ₹{Number(t.slippage || 0).toFixed(2)} points
-                                  </span>
-                                </div>
+                // Determine badge style
+                let badgeText = "ORDER EXECUTED";
+                let badgeClass = "bg-cyan-500/10 text-cyan-400 border border-cyan-500/25";
+                
+                if (t.status === 'CLOSED') {
+                  const closedPnl = Number(t.pnl || 0);
+                  if (closedPnl < 0) {
+                    badgeText = "STOP LOSS";
+                    badgeClass = "bg-rose-500/10 text-rose-400 border border-rose-500/25";
+                  } else {
+                    badgeText = "TAKE PROFIT";
+                    badgeClass = "bg-emerald-500/10 text-emerald-400 border border-emerald-500/25";
+                  }
+                }
 
-                                <div>
-                                  <span className="text-[10px] text-slate-500 block mb-1">Setup Logic Explanation</span>
-                                  <span className="text-slate-300 italic font-mono block max-w-lg">
-                                    {t.setup_logic || "Algorithm detected bullish trend tapping into 15m bullish Fair Value Gap zone above 50 period EMA filter."}
-                                  </span>
-                                </div>
-                              </div>
-                            </td>
-                          </tr>
-                        )}
-                      </>
-                    );
-                  })}
-                </tbody>
-              </table>
-            )}
-          </div>
-        )}
-
-        {/* B. Legacy logs Audit view */}
-        {activeTab === 'LOGS' && (
-          <div className="bg-[#05080e] border border-slate-850 rounded-xl p-4 font-mono text-[11px] text-slate-400 max-h-[300px] overflow-y-auto scrollbar-thin">
-            {logs.length === 0 ? (
-              <div className="text-slate-600 italic py-4 text-center">NO LOGS AVAILABLE IN DATABASE snapshot.</div>
-            ) : (
-              logs.map((log) => {
-                const logTime = new Date(log.timestamp).toLocaleTimeString('en-US', { hour12: false });
                 return (
-                  <div key={log.id} className="py-1 flex border-b border-slate-900/30 last:border-0">
-                    <span className="text-slate-600 mr-2">[{logTime}]</span>
-                    <span className="text-cyan-400 font-semibold mr-2">[{log.metric_state}]</span>
-                    <span className="text-slate-300 flex-1">{log.action_details}</span>
-                    {log.contract_targeted && (
-                      <span className="text-yellow-500 font-semibold">({log.contract_targeted})</span>
+                  <div 
+                    key={t.id}
+                    onClick={() => setExpandedTradeId(isExpanded ? null : t.id)}
+                    className={`border border-slate-850 bg-slate-900/20 hover:bg-slate-900/40 rounded-xl p-3.5 cursor-pointer transition-all duration-200 ${isExpanded ? 'border-cyan-500/40 shadow-lg shadow-cyan-950/10 bg-[#090d16]/80' : ''}`}
+                  >
+                    {/* Header: Badge & Time */}
+                    <div className="flex items-center justify-between mb-2">
+                      <span className={`text-[9px] font-bold font-mono px-2 py-0.5 rounded ${badgeClass}`}>
+                        {badgeText}
+                      </span>
+                      <span className="text-[10px] text-slate-500 font-mono">{formattedTime}</span>
+                    </div>
+
+                    {/* Body: Symbol & Price */}
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-slate-200">{t.symbol}</span>
+                      <span className="text-xs font-bold font-mono text-slate-300">
+                        ₹{Number(t.entry_price).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                      </span>
+                    </div>
+
+                    {/* Expandable Section */}
+                    {isExpanded && (
+                      <div className="mt-3 pt-3 border-t border-slate-850/80 font-mono text-[10px] text-slate-400 space-y-2.5 animate-fadeIn">
+                        <div>
+                          <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5">Setup Logic</span>
+                          <span className="text-slate-300 font-semibold block bg-slate-900/50 p-1.5 rounded border border-slate-850/50 leading-relaxed">
+                            {t.setup_logic || "Algorithm alignment trigger."}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center justify-between gap-4">
+                          <div>
+                            <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5">Execution Hash</span>
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-cyan-400 font-bold bg-slate-900 px-1.5 py-0.5 rounded border border-slate-850/50">
+                                {(t.execution_hash || "").slice(0, 10)}
+                              </span>
+                              <button 
+                                onClick={(e) => { e.stopPropagation(); copyToClipboard(t.execution_hash || ""); }}
+                                className="text-[9px] text-slate-500 hover:text-white cursor-pointer bg-slate-800 px-1 rounded transition-colors"
+                              >
+                                {copiedHash === t.execution_hash ? 'copied' : 'copy'}
+                              </button>
+                            </div>
+                          </div>
+                          <div>
+                            <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5 text-right">Slip Offset</span>
+                            <span className="text-slate-300 font-bold block text-right mt-0.5">
+                              {t.slippage ? `₹${Number(t.slippage).toFixed(2)} pts` : '—'}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="pt-2 border-t border-slate-850/30 flex items-center justify-between">
+                          <span className="text-slate-500 uppercase tracking-widest text-[8px]">PnL Outcome</span>
+                          <span className={`text-xs font-black ${Number(t.pnl || 0) >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                            {t.status === 'CLOSED' 
+                              ? `₹${Number(t.pnl).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`
+                              : 'RISK MITIGATED'
+                            }
+                          </span>
+                        </div>
+
+                        {t.status === 'CLOSED' && (
+                          <div className="bg-[#0f1d17]/30 border border-emerald-950/20 p-2 rounded text-[10px] text-slate-400 leading-normal">
+                            <span className="text-emerald-400 font-bold block uppercase text-[8px] mb-0.5">BROKER RAW RESPONSE</span>
+                            BUY {t.symbol}_ATM_CE | SL: {Number(t.entry_price - 20).toFixed(1)} | TP: {Number(t.entry_price + 40).toFixed(1)}
+                          </div>
+                        )}
+                      </div>
                     )}
                   </div>
                 );
               })
             )}
           </div>
-        )}
-      </section>
+        </div>
+
+      </div>
     </div>
   );
 }
