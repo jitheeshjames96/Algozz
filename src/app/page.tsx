@@ -19,14 +19,17 @@ export default function Dashboard() {
     const lineSeries = chart.addSeries(LineSeries, { color: '#38bdf8' });
 
     const loadData = async () => {
-      // Fetch trade history
       const { data } = await supabase.from('execution_logs').select('*').order('timestamp', { ascending: true });
       if (data) {
-        setLogs(data.reverse());
-        const chartData = data.map(l => ({ time: Math.floor(new Date(l.timestamp).getTime()/1000), value: Number(l.asset_price) }));
-        lineSeries.setData(chartData);
+        setLogs([...data].reverse());
+        const chartData = data.map(l => ({ 
+            time: Math.floor(new Date(l.timestamp).getTime()/1000) as any, 
+            value: Number(l.asset_price) 
+        }));
         
-        // Calculate Metrics from Logs
+        // TYPE FIX: Cast to 'any' to bypass strict TS check during production build
+        (lineSeries as any).setData(chartData);
+        
         const wins = data.filter(l => l.action_details?.includes('PROFIT')).length;
         const total = data.filter(l => l.action_details?.includes('PROFIT') || l.action_details?.includes('LOSS')).length;
         setMetrics({
@@ -51,11 +54,11 @@ export default function Dashboard() {
       <div ref={chartContainerRef} className="rounded-xl overflow-hidden border border-slate-800 mb-6" />
       <div className="bg-[#0B1120] p-6 rounded-xl border border-slate-800">
         <h2 className="text-lg font-bold mb-4">Trade Ledger</h2>
-        {logs.map(log => (
+        {logs.map((log: any) => (
             <div key={log.id} className="flex justify-between p-3 border-b border-slate-800 hover:bg-slate-900">
-                <span className="font-mono">{new Date(log.timestamp).toLocaleTimeString()}</span>
-                <span>{log.contract_targeted}</span>
-                <span className={log.trade_pnl > 0 ? 'text-emerald-400' : 'text-rose-400'}>₹{Number(log.trade_pnl || 0).toFixed(2)}</span>
+                <span className="font-mono text-sm">{new Date(log.timestamp).toLocaleTimeString()}</span>
+                <span className="text-sm">{log.contract_targeted}</span>
+                <span className={`font-bold ${Number(log.trade_pnl || 0) > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>₹{Number(log.trade_pnl || 0).toFixed(2)}</span>
             </div>
         ))}
       </div>
