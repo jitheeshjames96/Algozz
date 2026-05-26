@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from 'react';
-import { createChart, ColorType, CandlestickSeries, LineSeries, AreaSeries } from 'lightweight-charts';
+import { createChart, ColorType, CandlestickSeries, LineSeries, AreaSeries, createSeriesMarkers } from 'lightweight-charts';
 import { createClient } from '@supabase/supabase-js';
 
 // Setup Supabase Client
@@ -59,11 +59,18 @@ export default function Dashboard() {
   const [copiedHash, setCopiedHash] = useState<string | null>(null);
   const [currentTimeStr, setCurrentTimeStr] = useState<string>("");
   const [liveSpotPrice, setLiveSpotPrice] = useState<number>(22660.00);
+  const [resolution, setResolution] = useState<string>('15m');
+  const resolutionRef = useRef('15m');
+
+  useEffect(() => {
+    resolutionRef.current = resolution;
+  }, [resolution]);
 
   // Chart instances
   const mainChartRef = useRef<any>(null);
   const equityChartRef = useRef<any>(null);
   const candleSeriesRef = useRef<any>(null);
+  const candleMarkersRef = useRef<any>(null);
   const emaSeriesRef = useRef<any>(null);
   const fvgTopSeriesRef = useRef<any>(null);
   const fvgBottomSeriesRef = useRef<any>(null);
@@ -151,9 +158,9 @@ export default function Dashboard() {
   };
 
   // Fetch charts & market details from FastAPI backend
-  const loadChartAndState = async () => {
+  const loadChartAndState = async (resVal = resolution) => {
     try {
-      const res = await fetch("http://localhost:8000/api/chart-data");
+      const res = await fetch(`http://localhost:8000/api/chart-data?resolution=${resVal}`);
       const data = await res.json();
       
       if (data && data.candles && candleSeriesRef.current) {
@@ -196,7 +203,9 @@ export default function Dashboard() {
             shape: 'arrowUp' as const,
             text: 'SMC BUY'
           }));
-        candleSeriesRef.current.setMarkers(markers);
+        if (candleMarkersRef.current) {
+          candleMarkersRef.current.setMarkers(markers);
+        }
         setIsLive(true);
         
         // Update live spot price from latest candle close
@@ -207,7 +216,7 @@ export default function Dashboard() {
     } catch (e) {
       console.warn("Backend API not reachable. Generating simulated chart data locally.");
       setIsLive(false);
-      generateLocalSimulatedData();
+      generateLocalSimulatedData(resVal);
     }
   };
 
@@ -235,7 +244,7 @@ export default function Dashboard() {
   };
 
   // Generate simulated candle data if backend is offline
-  const generateLocalSimulatedData = () => {
+  const generateLocalSimulatedData = (resVal = resolution) => {
     if (!candleSeriesRef.current) return;
     let mockCandles = [];
     let mockEma = [];
@@ -244,7 +253,17 @@ export default function Dashboard() {
     let mockMarkers = [];
 
     let basePrice = 22660.0;
-    let time = Math.floor(Date.now() / 1000) - 150 * 60; // 150 candles back (1m resolution fallback)
+    
+    let secondsPerCandle = 15 * 60;
+    if (resVal === '5m') secondsPerCandle = 5 * 60;
+    else if (resVal === '15m') secondsPerCandle = 15 * 60;
+    else if (resVal === '1h') secondsPerCandle = 60 * 60;
+    else if (resVal === '4h') secondsPerCandle = 4 * 60 * 60;
+    else if (resVal === '1d') secondsPerCandle = 24 * 60 * 60;
+    else if (resVal === '1w') secondsPerCandle = 7 * 24 * 60 * 60;
+    else if (resVal === '1m') secondsPerCandle = 30 * 24 * 60 * 60;
+
+    let time = Math.floor(Date.now() / 1000) - 150 * secondsPerCandle;
 
     for (let i = 0; i < 150; i++) {
       const open = basePrice;
@@ -272,14 +291,16 @@ export default function Dashboard() {
       }
       
       basePrice = close;
-      time += 60;
+      time += secondsPerCandle;
     }
 
     candleSeriesRef.current.setData(mockCandles);
     if (emaSeriesRef.current) emaSeriesRef.current.setData(mockEma);
     if (fvgTopSeriesRef.current) fvgTopSeriesRef.current.setData(mockFvgTop);
     if (fvgBottomSeriesRef.current) fvgBottomSeriesRef.current.setData(mockFvgBottom);
-    candleSeriesRef.current.setMarkers(mockMarkers);
+    if (candleMarkersRef.current) {
+      candleMarkersRef.current.setMarkers(mockMarkers);
+    }
     
     // Set live spot price
     setLiveSpotPrice(Number(basePrice.toFixed(2)));
@@ -372,8 +393,11 @@ export default function Dashboard() {
         title: 'FVG Low',
       });
 
+      const candleMarkers = createSeriesMarkers(candleSeries, []);
+
       mainChartRef.current = chart;
       candleSeriesRef.current = candleSeries;
+      candleMarkersRef.current = candleMarkers;
       emaSeriesRef.current = emaSeries;
       fvgTopSeriesRef.current = fvgTopSeries;
       fvgBottomSeriesRef.current = fvgBottomSeries;
@@ -428,7 +452,7 @@ export default function Dashboard() {
 
     // Initial loading
     loadData();
-    loadChartAndState();
+    loadChartAndState(resolutionRef.current);
     checkMarketState();
 
     // 3. Supabase Real-Time Subscriptions
@@ -458,7 +482,7 @@ export default function Dashboard() {
 
     // Periodic checks
     const pollInterval = setInterval(() => {
-      loadChartAndState();
+      loadChartAndState(resolutionRef.current);
       checkMarketState();
     }, 4000);
 
@@ -468,6 +492,13 @@ export default function Dashboard() {
       supabase.removeChannel(metricsChannel);
     };
   }, [mounted]);
+
+  // Reactive resolution effect
+  useEffect(() => {
+    if (mounted) {
+      loadChartAndState(resolution);
+    }
+  }, [resolution]);
 
   const copyToClipboard = (hash: string) => {
     navigator.clipboard.writeText(hash);
@@ -636,9 +667,27 @@ export default function Dashboard() {
                   EQUITY TRAJECTORY
                 </button>
               </div>
-              <div className="text-[10px] font-mono text-cyan-400 bg-slate-900 border border-slate-800 px-2 py-0.5 rounded">
-                {activeChartTab === 'PRICE' ? '1m resolution' : 'cum PnL curve'}
-              </div>
+              {activeChartTab === 'PRICE' ? (
+                <div className="flex items-center gap-1 bg-slate-950/85 border border-slate-850 p-0.5 rounded-lg">
+                  {['5m', '15m', '1h', '4h', '1d', '1w', '1m'].map((res) => (
+                    <button
+                      key={res}
+                      onClick={() => setResolution(res)}
+                      className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold transition-all cursor-pointer ${
+                        resolution === res
+                          ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/35 font-extrabold shadow-sm'
+                          : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900 border border-transparent'
+                      }`}
+                    >
+                      {res.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-[10px] font-mono text-cyan-400 bg-slate-900 border border-slate-800 px-2 py-0.5 rounded">
+                  cum PnL curve
+                </div>
+              )}
             </div>
 
             {/* Price Candlestick Chart */}
