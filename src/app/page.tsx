@@ -357,14 +357,29 @@ export default function Dashboard() {
   useEffect(() => {
     setMounted(true);
     const updateTime = () => {
+      const asset = ASSETS.find(a => a.value === assetRef.current);
+      const cat = asset?.category || '';
+      let tz = 'Asia/Kolkata';
+      let label = 'IST';
+      if (cat === 'Global Indices') {
+        if (['^GDAXI', '^FTSE', '^FCHI'].includes(assetRef.current)) {
+          tz = 'Europe/Berlin'; label = 'CET';
+        } else {
+          tz = 'America/New_York'; label = 'EST';
+        }
+      } else if (cat === 'Forex') {
+        tz = 'America/New_York'; label = 'EST';
+      } else if (cat === 'Crypto' || cat === 'Commodities') {
+        tz = 'UTC'; label = 'UTC';
+      }
       const options: Intl.DateTimeFormatOptions = {
-        timeZone: 'Asia/Kolkata',
+        timeZone: tz,
         hour: '2-digit',
         minute: '2-digit',
         second: '2-digit',
         hour12: false
       };
-      setCurrentTimeStr(new Date().toLocaleTimeString('en-US', options) + " IST");
+      setCurrentTimeStr(new Date().toLocaleTimeString('en-US', options) + ` ${label}`);
     };
     updateTime();
     const interval = setInterval(updateTime, 1000);
@@ -505,9 +520,9 @@ export default function Dashboard() {
     }
   };
 
-  // Check market hours status locally / backend
+  // Check market hours status locally / backend — use ref to avoid stale closure
   const checkMarketState = () => {
-    setMarketState(getMarketStatusForAsset(selectedAsset));
+    setMarketState(getMarketStatusForAsset(assetRef.current));
   };
 
   // Generate simulated candle data if backend is offline
@@ -599,28 +614,27 @@ export default function Dashboard() {
       .sort((a, b) => new Date(a.exit_time || "").getTime() - new Date(b.exit_time || "").getTime());
 
     let startingEquity = 100000.00;
-    const firstTradeTime = closed.length > 0 
-      ? Math.floor(new Date(closed[0].exit_time || "").getTime() / 1000) - 3600 
-      : Math.floor((Date.now() - 3600 * 24 * 7 * 1000) / 1000);
-      
-    const equityCurveData = [{
-      time: firstTradeTime as any,
-      value: startingEquity
-    }];
+    // Always start 7 days back so baseline is visible even with no trades
+    const baselineTime = Math.floor((Date.now() - 3600 * 24 * 7 * 1000) / 1000);
+    const equityCurveData: { time: any; value: number }[] = [
+      { time: baselineTime as any, value: startingEquity }
+    ];
 
-    closed.forEach(t => {
-      startingEquity += Number(t.pnl || 0);
-      equityCurveData.push({
-        time: Math.floor(new Date(t.exit_time || "").getTime() / 1000) as any,
-        value: startingEquity
+    if (closed.length > 0) {
+      closed.forEach(t => {
+        startingEquity += Number(t.pnl || 0);
+        equityCurveData.push({
+          time: Math.floor(new Date(t.exit_time || "").getTime() / 1000) as any,
+          value: startingEquity
+        });
       });
-    });
+    }
 
-    if (equityCurveData.length === 1) {
-      equityCurveData.push({
-        time: Math.floor(Date.now() / 1000) as any,
-        value: startingEquity
-      });
+    // Always cap with current time so line is visible
+    const now = Math.floor(Date.now() / 1000);
+    const lastPoint = equityCurveData[equityCurveData.length - 1];
+    if (lastPoint.time < now) {
+      equityCurveData.push({ time: now as any, value: startingEquity });
     }
 
     equityAreaSeriesRef.current.setData(equityCurveData);
@@ -803,8 +817,10 @@ export default function Dashboard() {
     setTimeout(() => setCopiedHash(null), 2000);
   };
 
-  const openPosition = trades.find(t => t.status === 'OPEN' && isAssetMatch(selectedAsset, t.symbol));
-  const otherOpenPosition = trades.find(t => t.status === 'OPEN' && !isAssetMatch(selectedAsset, t.symbol));
+  // Strictly match open position to current selected asset only
+  const openPosition = trades.find(t => t.status === 'OPEN' && isAssetMatch(selectedAsset, t.symbol)) ?? null;
+  // Any other open position on a different asset
+  const otherOpenPosition = trades.find(t => t.status === 'OPEN' && !isAssetMatch(selectedAsset, t.symbol)) ?? null;
   
   // Calculate live unrealized pnl
   let liveUnrealizedPnl = 0.00;
