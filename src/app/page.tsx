@@ -58,44 +58,48 @@ export default function Dashboard() {
     // 3. Fetch Initial Data from Supabase
     const fetchInitialData = async () => {
       try {
-        // Fetch Account Metrics
-        const { data: metricsData } = await supabase
+        // Fetch Account Metrics (maybeSingle prevents 406 crash if table is empty)
+        const { data: metricsData, error: metricsError } = await supabase
           .from('account_metrics')
           .select('*')
           .order('updated_at', { ascending: false })
           .limit(1)
-          .single();
+          .maybeSingle(); 
+
+        if (metricsError) console.error("Metrics DB Error:", metricsError.message);
 
         if (metricsData) {
           setMetrics({
-            account_capital: Number(metricsData.base_capital) + Number(metricsData.unrealized_pnl),
-            win_rate: 42.86, // Hardcoded for now until win rate logic is added
-            net_profit: Number(metricsData.unrealized_pnl),
-            active_allocations: metricsData.open_positions,
+            account_capital: Number(metricsData.base_capital || 100000) + Number(metricsData.unrealized_pnl || 0),
+            win_rate: 42.86, // Hardcoded visual placeholder
+            net_profit: Number(metricsData.unrealized_pnl || 0),
+            active_allocations: metricsData.open_positions || 0,
             safety_state: "SECURE"
           });
         }
 
         // Fetch Execution Logs
-        const { data: logsData } = await supabase
+        const { data: logsData, error: logsError } = await supabase
           .from('execution_logs')
           .select('*')
           .order('created_at', { ascending: false })
           .limit(20);
 
-        if (logsData) {
+        if (logsError) console.error("Logs DB Error:", logsError.message);
+
+        if (logsData && logsData.length > 0) {
           setLiveLogs(logsData);
           
-          // Plot trades on the chart as temporary visual markers
           const markers = logsData.map((log: any) => ({
-            time: new Date(log.created_at).getTime() / 1000,
+            time: new Date(log.created_at || new Date()).getTime() / 1000,
             position: log.metric_state === 'BUY' ? 'belowBar' : 'aboveBar',
             color: log.metric_state === 'BUY' ? '#10b981' : '#ef4444',
             shape: log.metric_state === 'BUY' ? 'arrowUp' : 'arrowDown',
-            text: log.metric_state
+            text: log.metric_state || 'TRADE'
           })).sort((a: any, b: any) => a.time - b.time);
 
           if (markers.length > 0) {
+            // TypeScript BYPASS: Forces Next.js to ignore strict type checking here
             (candlestickSeries as any).setMarkers(markers);
           }
         }
@@ -116,9 +120,9 @@ export default function Dashboard() {
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'account_metrics' }, (payload) => {
         setMetrics((prev) => ({
           ...prev,
-          account_capital: Number(payload.new.base_capital) + Number(payload.new.unrealized_pnl),
-          net_profit: Number(payload.new.unrealized_pnl),
-          active_allocations: payload.new.open_positions,
+          account_capital: Number(payload.new.base_capital || 0) + Number(payload.new.unrealized_pnl || 0),
+          net_profit: Number(payload.new.unrealized_pnl || 0),
+          active_allocations: payload.new.open_positions || 0,
           safety_state: "SECURE"
         }));
       })
