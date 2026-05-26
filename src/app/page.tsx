@@ -37,6 +37,90 @@ interface AccountMetrics {
   total_trades: number;
 }
 
+// Supported Assets Configuration
+const ASSETS = [
+  { value: '^NSEI', label: 'NIFTY 50', category: 'Indian Indices' },
+  { value: '^NSEBANK', label: 'BANK NIFTY', category: 'Indian Indices' },
+  { value: '^BSESN', label: 'SENSEX', category: 'Indian Indices' },
+  { value: 'RELIANCE.NS', label: 'Reliance Industries', category: 'Indian Equities' },
+  { value: 'TCS.NS', label: 'TCS', category: 'Indian Equities' },
+  { value: 'HDFCBANK.NS', label: 'HDFC Bank', category: 'Indian Equities' },
+  { value: 'INFY.NS', label: 'Infosys', category: 'Indian Equities' },
+  { value: '^GSPC', label: 'S&P 500 (US)', category: 'Global Indices' },
+  { value: '^DJI', label: 'Dow Jones (US)', category: 'Global Indices' },
+  { value: '^IXIC', label: 'Nasdaq (US)', category: 'Global Indices' },
+  { value: '^GDAXI', label: 'DAX (Germany)', category: 'Global Indices' },
+  { value: '^FTSE', label: 'FTSE 100 (UK)', category: 'Global Indices' },
+  { value: '^FCHI', label: 'CAC 40 (France)', category: 'Global Indices' },
+  { value: 'EURUSD=X', label: 'EUR / USD', category: 'Forex' },
+  { value: 'GBPUSD=X', label: 'GBP / USD', category: 'Forex' },
+  { value: 'GC=F', label: 'Gold Spot', category: 'Commodities' },
+  { value: 'BTC-USD', label: 'Bitcoin USD', category: 'Crypto' },
+];
+
+// Helper Functions for Performance Analytics
+const calculateProfitFactor = (tradesList: Trade[]) => {
+  const closed = tradesList.filter(t => t.status === 'CLOSED');
+  const profit = closed.filter(t => Number(t.pnl || 0) > 0).reduce((acc, t) => acc + Number(t.pnl || 0), 0);
+  const loss = Math.abs(closed.filter(t => Number(t.pnl || 0) <= 0).reduce((acc, t) => acc + Number(t.pnl || 0), 0));
+  return loss === 0 ? profit : profit / loss;
+};
+
+const calculateAvgWinLoss = (tradesList: Trade[]) => {
+  const closed = tradesList.filter(t => t.status === 'CLOSED');
+  const wins = closed.filter(t => Number(t.pnl || 0) > 0);
+  const losses = closed.filter(t => Number(t.pnl || 0) <= 0);
+  const avgWin = wins.length > 0 ? wins.reduce((acc, t) => acc + Number(t.pnl || 0), 0) / wins.length : 0;
+  const avgLoss = losses.length > 0 ? Math.abs(losses.reduce((acc, t) => acc + Number(t.pnl || 0), 0)) / losses.length : 0;
+  return { avgWin, avgLoss };
+};
+
+const calculatePeriodReturn = (tradesList: Trade[], periodType: 'weekly' | 'monthly') => {
+  const closed = tradesList.filter(t => t.status === 'CLOSED');
+  const now = new Date();
+  let cutoff = new Date();
+  if (periodType === 'weekly') {
+    cutoff.setDate(now.getDate() - 7);
+  } else {
+    cutoff.setMonth(now.getMonth() - 1);
+  }
+  return closed
+    .filter(t => new Date(t.exit_time || "").getTime() >= cutoff.getTime())
+    .reduce((acc, t) => acc + Number(t.pnl || 0), 0);
+};
+
+const calculateDailyBreakdown = (tradesList: Trade[]) => {
+  const closed = tradesList.filter(t => t.status === 'CLOSED');
+  const groups: { [key: string]: { pnl: number, count: number, wins: number } } = {};
+  
+  closed.forEach(t => {
+    const dateStr = new Date(t.exit_time || "").toLocaleDateString('en-IN', {
+      year: 'numeric', month: 'short', day: 'numeric'
+    });
+    if (!groups[dateStr]) {
+      groups[dateStr] = { pnl: 0, count: 0, wins: 0 };
+    }
+    const pnl = Number(t.pnl || 0);
+    groups[dateStr].pnl += pnl;
+    groups[dateStr].count += 1;
+    if (pnl > 0) {
+      groups[dateStr].wins += 1;
+    }
+  });
+
+  return Object.keys(groups).map(date => {
+    const g = groups[date];
+    const winRate = g.count > 0 ? Math.round((g.wins / g.count) * 100) : 0;
+    return {
+      date,
+      pnl: g.pnl,
+      count: g.count,
+      wins: g.wins,
+      winRate
+    };
+  }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+};
+
 export default function Dashboard() {
   const [mounted, setMounted] = useState(false);
   const chartContainerRef = useRef<HTMLDivElement>(null);
@@ -54,7 +138,7 @@ export default function Dashboard() {
   });
   
   const [trades, setTrades] = useState<Trade[]>([]);
-  const [activeChartTab, setActiveChartTab] = useState<'PRICE' | 'EQUITY'>('PRICE');
+  const [activeChartTab, setActiveChartTab] = useState<'PRICE' | 'EQUITY' | 'PERFORMANCE'>('PRICE');
   const [expandedTradeId, setExpandedTradeId] = useState<string | null>(null);
   const [isLive, setIsLive] = useState(false);
   const [marketState, setMarketState] = useState<'OPEN' | 'CLOSED'>('CLOSED');
@@ -62,11 +146,18 @@ export default function Dashboard() {
   const [currentTimeStr, setCurrentTimeStr] = useState<string>("");
   const [liveSpotPrice, setLiveSpotPrice] = useState<number>(22660.00);
   const [resolution, setResolution] = useState<string>('15m');
+  const [selectedAsset, setSelectedAsset] = useState<string>('^NSEI');
+  const [selectedAssetLabel, setSelectedAssetLabel] = useState<string>('NIFTY 50');
   const resolutionRef = useRef('15m');
+  const assetRef = useRef('^NSEI');
 
   useEffect(() => {
     resolutionRef.current = resolution;
   }, [resolution]);
+
+  useEffect(() => {
+    assetRef.current = selectedAsset;
+  }, [selectedAsset]);
 
   // Chart instances
   const mainChartRef = useRef<any>(null);
@@ -160,9 +251,9 @@ export default function Dashboard() {
   };
 
   // Fetch charts & market details from FastAPI backend
-  const loadChartAndState = async (resVal = resolution) => {
+  const loadChartAndState = async (resVal = resolution, assetVal = selectedAsset) => {
     try {
-      const res = await fetch(`${BACKEND_URL}/api/chart-data?resolution=${resVal}`);
+      const res = await fetch(`${BACKEND_URL}/api/chart-data?ticker=${assetVal}&resolution=${resVal}`);
       const data = await res.json();
       
       if (data && data.candles && candleSeriesRef.current) {
@@ -218,7 +309,7 @@ export default function Dashboard() {
     } catch (e) {
       console.warn("Backend API not reachable. Generating simulated chart data locally.");
       setIsLive(false);
-      generateLocalSimulatedData(resVal);
+      generateLocalSimulatedData(resVal, assetVal);
     }
   };
 
@@ -246,7 +337,7 @@ export default function Dashboard() {
   };
 
   // Generate simulated candle data if backend is offline
-  const generateLocalSimulatedData = (resVal = resolution) => {
+  const generateLocalSimulatedData = (resVal = resolution, assetVal = selectedAsset) => {
     if (!candleSeriesRef.current) return;
     let mockCandles = [];
     let mockEma = [];
@@ -255,15 +346,31 @@ export default function Dashboard() {
     let mockMarkers = [];
 
     let basePrice = 22660.0;
+    if (assetVal.includes('BTC')) basePrice = 68000.0;
+    else if (assetVal === 'GC=F') basePrice = 2350.0;
+    else if (assetVal.includes('EURUSD')) basePrice = 1.0850;
+    else if (assetVal.includes('GBPUSD')) basePrice = 1.2720;
+    else if (assetVal === '^GSPC') basePrice = 5300.0;
+    else if (assetVal === '^DJI') basePrice = 39000.0;
+    else if (assetVal === '^IXIC') basePrice = 16800.0;
+    else if (assetVal === '^GDAXI') basePrice = 18600.0;
+    else if (assetVal === '^FTSE') basePrice = 8300.0;
+    else if (assetVal === '^FCHI') basePrice = 8100.0;
+    else if (assetVal === '^BSESN') basePrice = 75000.0;
+    else if (assetVal === 'RELIANCE.NS') basePrice = 2900.0;
+    else if (assetVal === 'TCS.NS') basePrice = 3850.0;
+    else if (assetVal === 'HDFCBANK.NS') basePrice = 1520.0;
+    else if (assetVal === 'INFY.NS') basePrice = 1450.0;
     
     let secondsPerCandle = 15 * 60;
-    if (resVal === '5m') secondsPerCandle = 5 * 60;
+    if (resVal === '1m') secondsPerCandle = 60;
+    else if (resVal === '5m') secondsPerCandle = 5 * 60;
     else if (resVal === '15m') secondsPerCandle = 15 * 60;
     else if (resVal === '1h') secondsPerCandle = 60 * 60;
     else if (resVal === '4h') secondsPerCandle = 4 * 60 * 60;
     else if (resVal === '1d') secondsPerCandle = 24 * 60 * 60;
     else if (resVal === '1w') secondsPerCandle = 7 * 24 * 60 * 60;
-    else if (resVal === '1m') secondsPerCandle = 30 * 24 * 60 * 60;
+    else if (resVal === '1mo') secondsPerCandle = 30 * 24 * 60 * 60;
 
     let time = Math.floor(Date.now() / 1000) - 150 * secondsPerCandle;
 
@@ -454,7 +561,7 @@ export default function Dashboard() {
 
     // Initial loading
     loadData();
-    loadChartAndState(resolutionRef.current);
+    loadChartAndState(resolutionRef.current, assetRef.current);
     checkMarketState();
 
     // 3. Supabase Real-Time Subscriptions
@@ -484,7 +591,7 @@ export default function Dashboard() {
 
     // Periodic checks
     const pollInterval = setInterval(() => {
-      loadChartAndState(resolutionRef.current);
+      loadChartAndState(resolutionRef.current, assetRef.current);
       checkMarketState();
     }, 4000);
 
@@ -495,12 +602,12 @@ export default function Dashboard() {
     };
   }, [mounted]);
 
-  // Reactive resolution effect
+  // Reactive resolution/asset updates
   useEffect(() => {
     if (mounted) {
-      loadChartAndState(resolution);
+      loadChartAndState(resolution, selectedAsset);
     }
-  }, [resolution]);
+  }, [resolution, selectedAsset]);
 
   const copyToClipboard = (hash: string) => {
     navigator.clipboard.writeText(hash);
@@ -550,6 +657,30 @@ export default function Dashboard() {
         </div>
 
         <div className="flex flex-wrap items-center gap-3 font-mono text-xs">
+          <div className="flex items-center gap-2 border border-slate-800 bg-[#070b15] hover:border-cyan-500/50 px-3 py-1 rounded-xl transition-colors">
+            <span className="text-slate-400 font-semibold uppercase tracking-wider text-[10px]">Asset:</span>
+            <select
+              value={selectedAsset}
+              onChange={(e) => {
+                const val = e.target.value;
+                setSelectedAsset(val);
+                const asset = ASSETS.find(a => a.value === val);
+                if (asset) setSelectedAssetLabel(asset.label);
+              }}
+              className="bg-transparent text-cyan-400 font-bold border-none outline-none cursor-pointer focus:ring-0 text-xs pr-2 py-0.5"
+            >
+              {Array.from(new Set(ASSETS.map(a => a.category))).map(cat => (
+                <optgroup key={cat} label={cat} className="bg-[#070b15] text-slate-400 font-bold">
+                  {ASSETS.filter(a => a.category === cat).map(a => (
+                    <option key={a.value} value={a.value} className="bg-[#070b15] text-cyan-400">
+                      {a.label}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </div>
+
           <div className="flex items-center gap-2 border border-slate-800 bg-slate-900/40 px-3 py-1.5 rounded-lg">
             <span className="text-slate-400">MARKET:</span>
             <div className="flex items-center gap-1.5">
@@ -660,7 +791,7 @@ export default function Dashboard() {
                   onClick={() => setActiveChartTab('PRICE')}
                   className={`text-xs font-bold font-mono tracking-widest pb-1 border-b-2 transition-colors cursor-pointer ${activeChartTab === 'PRICE' ? 'border-cyan-400 text-cyan-400' : 'border-transparent text-slate-400 hover:text-slate-200'}`}
                 >
-                  MARKET TRAJECTORY (NIFTY50)
+                  MARKET TRAJECTORY ({selectedAssetLabel.toUpperCase()})
                 </button>
                 <button 
                   onClick={() => setActiveChartTab('EQUITY')}
@@ -668,10 +799,16 @@ export default function Dashboard() {
                 >
                   EQUITY TRAJECTORY
                 </button>
+                <button 
+                  onClick={() => setActiveChartTab('PERFORMANCE')}
+                  className={`text-xs font-bold font-mono tracking-widest pb-1 border-b-2 transition-colors cursor-pointer ${activeChartTab === 'PERFORMANCE' ? 'border-cyan-400 text-cyan-400' : 'border-transparent text-slate-400 hover:text-slate-200'}`}
+                >
+                  PERFORMANCE ANALYTICS
+                </button>
               </div>
               {activeChartTab === 'PRICE' ? (
                 <div className="flex items-center gap-1 bg-slate-950/85 border border-slate-850 p-0.5 rounded-lg">
-                  {['5m', '15m', '1h', '4h', '1d', '1w', '1m'].map((res) => (
+                  {['1m', '5m', '15m', '1h', '4h', '1d', '1w', '1mo'].map((res) => (
                     <button
                       key={res}
                       onClick={() => setResolution(res)}
@@ -681,13 +818,17 @@ export default function Dashboard() {
                           : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900 border border-transparent'
                       }`}
                     >
-                      {res.toUpperCase()}
+                      {res === '1mo' ? '1M' : res === '1m' ? '1m' : res.toUpperCase()}
                     </button>
                   ))}
                 </div>
-              ) : (
+              ) : activeChartTab === 'EQUITY' ? (
                 <div className="text-[10px] font-mono text-cyan-400 bg-slate-900 border border-slate-800 px-2 py-0.5 rounded">
                   cum PnL curve
+                </div>
+              ) : (
+                <div className="text-[10px] font-mono text-cyan-400 bg-slate-900 border border-slate-800 px-2 py-0.5 rounded">
+                  key metrics report
                 </div>
               )}
             </div>
@@ -700,6 +841,126 @@ export default function Dashboard() {
             {/* Equity Curve Chart */}
             <div className={activeChartTab === 'EQUITY' ? 'block' : 'hidden'}>
               <div ref={equityChartContainerRef} className="w-full h-[380px] rounded-xl overflow-hidden bg-[#090d16]" />
+            </div>
+
+            {/* Performance Analytics Tab */}
+            <div className={activeChartTab === 'PERFORMANCE' ? 'block' : 'hidden'}>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 p-2 font-mono text-xs">
+                {/* Left Panel: Win Rate & Profit Factor Summary */}
+                <div className="md:col-span-1 border border-slate-800/80 bg-slate-950/40 rounded-xl p-4 flex flex-col gap-4">
+                  <h3 className="text-slate-400 font-bold tracking-wider border-b border-slate-800/80 pb-2 text-[11px] uppercase">
+                    Key Performance Metrics
+                  </h3>
+                  
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="bg-slate-900/50 p-3 rounded-lg border border-slate-850">
+                      <span className="text-slate-500 text-[9px] uppercase tracking-wider block mb-1">Profit Factor</span>
+                      <span className="text-lg font-black text-cyan-400">
+                        {calculateProfitFactor(trades).toFixed(2)}
+                      </span>
+                    </div>
+                    
+                    <div className="bg-slate-900/50 p-3 rounded-lg border border-slate-850">
+                      <span className="text-slate-500 text-[9px] uppercase tracking-wider block mb-1">Win Ratio</span>
+                      <span className="text-lg font-black text-emerald-400">
+                        {metrics.win_rate}%
+                      </span>
+                    </div>
+
+                    <div className="bg-slate-900/50 p-3 rounded-lg border border-slate-850">
+                      <span className="text-slate-500 text-[9px] uppercase tracking-wider block mb-1">Avg Win</span>
+                      <span className="text-xs font-bold text-emerald-400">
+                        ₹{calculateAvgWinLoss(trades).avgWin.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                      </span>
+                    </div>
+
+                    <div className="bg-slate-900/50 p-3 rounded-lg border border-slate-850">
+                      <span className="text-slate-500 text-[9px] uppercase tracking-wider block mb-1">Avg Loss</span>
+                      <span className="text-xs font-bold text-rose-400">
+                        ₹{calculateAvgWinLoss(trades).avgLoss.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-900/40 p-4 rounded-xl border border-slate-850/60 mt-2">
+                    <div className="flex justify-between mb-2">
+                      <span className="text-slate-400 uppercase tracking-widest text-[9px]">Winning Trades</span>
+                      <span className="text-emerald-400 font-bold">
+                        {trades.filter(t => t.status === 'CLOSED' && Number(t.pnl || 0) > 0).length}
+                      </span>
+                    </div>
+                    <div className="flex justify-between mb-2">
+                      <span className="text-slate-400 uppercase tracking-widest text-[9px]">Losing Trades</span>
+                      <span className="text-rose-400 font-bold">
+                        {trades.filter(t => t.status === 'CLOSED' && Number(t.pnl || 0) <= 0).length}
+                      </span>
+                    </div>
+                    <div className="flex justify-between border-t border-slate-800 pt-2">
+                      <span className="text-slate-400 uppercase tracking-widest text-[9px]">Total Completed</span>
+                      <span className="text-slate-200 font-bold">
+                        {trades.filter(t => t.status === 'CLOSED').length}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Right Panel: Time Period Breakdowns (Daily/Weekly/Monthly) */}
+                <div className="md:col-span-2 flex flex-col gap-4">
+                  <div className="border border-slate-800/80 bg-slate-950/40 rounded-xl p-4">
+                    <h3 className="text-slate-400 font-bold tracking-wider border-b border-slate-800/80 pb-2 mb-3 text-[11px] uppercase">
+                      Timeframe Performance Breakdown
+                    </h3>
+                    
+                    <div className="grid grid-cols-3 gap-4 mb-4">
+                      <div className="bg-slate-900/30 p-3 rounded-lg border border-slate-850">
+                        <span className="text-slate-500 text-[8px] uppercase tracking-wider block mb-1">Weekly Return</span>
+                        <span className={`text-sm font-black ${calculatePeriodReturn(trades, 'weekly') >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                          ₹{calculatePeriodReturn(trades, 'weekly').toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                        </span>
+                      </div>
+                      <div className="bg-slate-900/30 p-3 rounded-lg border border-slate-850">
+                        <span className="text-slate-500 text-[8px] uppercase tracking-wider block mb-1">Monthly Return</span>
+                        <span className={`text-sm font-black ${calculatePeriodReturn(trades, 'monthly') >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                          ₹{calculatePeriodReturn(trades, 'monthly').toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                        </span>
+                      </div>
+                      <div className="bg-slate-900/30 p-3 rounded-lg border border-slate-850">
+                        <span className="text-slate-500 text-[8px] uppercase tracking-wider block mb-1">All-Time Net PnL</span>
+                        <span className={`text-sm font-black ${metrics.net_profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                          ₹{metrics.net_profit.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="overflow-x-auto max-h-[220px] overflow-y-auto pr-1">
+                      <table className="w-full text-left border-collapse text-[10px]">
+                        <thead>
+                          <tr className="border-b border-slate-800 text-slate-500 uppercase tracking-widest text-[8px]">
+                            <th className="py-2 px-1">Date</th>
+                            <th className="py-2 px-1 text-center">Trades</th>
+                            <th className="py-2 px-1 text-center">Wins</th>
+                            <th className="py-2 px-1 text-center">Win %</th>
+                            <th className="py-2 px-1 text-right">Net P&L</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {calculateDailyBreakdown(trades).map((day, idx) => (
+                            <tr key={idx} className="border-b border-slate-850/50 hover:bg-slate-900/20">
+                              <td className="py-2 px-1 text-slate-300 font-bold">{day.date}</td>
+                              <td className="py-2 px-1 text-slate-400 text-center font-bold">{day.count}</td>
+                              <td className="py-2 px-1 text-emerald-500 text-center font-bold">{day.wins}</td>
+                              <td className="py-2 px-1 text-slate-300 text-center">{day.winRate}%</td>
+                              <td className={`py-2 px-1 text-right font-black ${day.pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                ₹{day.pnl >= 0 ? '+' : ''}{day.pnl.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
 
