@@ -21,11 +21,20 @@ interface Trade {
   entry_time: string;
   exit_time: string | null;
   status: 'OPEN' | 'CLOSED';
-  pnl: number;
+  pnl: number; // raw DB value (may be direction-unaware, use computePnl() instead)
   execution_hash?: string;
   slippage?: number;
   setup_logic?: string;
 }
+
+// Compute correct directional P&L regardless of the DB generated column formula
+const computePnl = (t: Trade): number => {
+  if (t.status !== 'CLOSED' || t.exit_price == null) return 0;
+  const delta = t.direction === 'BUY'
+    ? Number(t.exit_price) - Number(t.entry_price)
+    : Number(t.entry_price) - Number(t.exit_price);
+  return delta * Number(t.quantity);
+};
 
 interface AccountMetrics {
   account_capital: number;
@@ -262,17 +271,17 @@ const getMarketStatusForAsset = (assetVal: string): 'OPEN' | 'CLOSED' => {
 
 const calculateProfitFactor = (tradesList: Trade[]) => {
   const closed = tradesList.filter(t => t.status === 'CLOSED');
-  const profit = closed.filter(t => Number(t.pnl || 0) > 0).reduce((acc, t) => acc + Number(t.pnl || 0), 0);
-  const loss = Math.abs(closed.filter(t => Number(t.pnl || 0) <= 0).reduce((acc, t) => acc + Number(t.pnl || 0), 0));
+  const profit = closed.filter(t => computePnl(t) > 0).reduce((acc, t) => acc + computePnl(t), 0);
+  const loss = Math.abs(closed.filter(t => computePnl(t) <= 0).reduce((acc, t) => acc + computePnl(t), 0));
   return loss === 0 ? profit : profit / loss;
 };
 
 const calculateAvgWinLoss = (tradesList: Trade[]) => {
   const closed = tradesList.filter(t => t.status === 'CLOSED');
-  const wins = closed.filter(t => Number(t.pnl || 0) > 0);
-  const losses = closed.filter(t => Number(t.pnl || 0) <= 0);
-  const avgWin = wins.length > 0 ? wins.reduce((acc, t) => acc + Number(t.pnl || 0), 0) / wins.length : 0;
-  const avgLoss = losses.length > 0 ? Math.abs(losses.reduce((acc, t) => acc + Number(t.pnl || 0), 0)) / losses.length : 0;
+  const wins = closed.filter(t => computePnl(t) > 0);
+  const losses = closed.filter(t => computePnl(t) <= 0);
+  const avgWin = wins.length > 0 ? wins.reduce((acc, t) => acc + computePnl(t), 0) / wins.length : 0;
+  const avgLoss = losses.length > 0 ? Math.abs(losses.reduce((acc, t) => acc + computePnl(t), 0)) / losses.length : 0;
   return { avgWin, avgLoss };
 };
 
@@ -287,7 +296,7 @@ const calculatePeriodReturn = (tradesList: Trade[], periodType: 'weekly' | 'mont
   }
   return closed
     .filter(t => new Date(t.exit_time || "").getTime() >= cutoff.getTime())
-    .reduce((acc, t) => acc + Number(t.pnl || 0), 0);
+    .reduce((acc, t) => acc + computePnl(t), 0);
 };
 
 const calculateDailyBreakdown = (tradesList: Trade[]) => {
@@ -301,7 +310,7 @@ const calculateDailyBreakdown = (tradesList: Trade[]) => {
     if (!groups[dateStr]) {
       groups[dateStr] = { pnl: 0, count: 0, wins: 0 };
     }
-    const pnl = Number(t.pnl || 0);
+    const pnl = computePnl(t);
     groups[dateStr].pnl += pnl;
     groups[dateStr].count += 1;
     if (pnl > 0) {
@@ -422,12 +431,12 @@ export default function Dashboard() {
       if (tradesData) {
         setTrades(tradesData);
         
-        // Calculate Win Rate and active allocations locally
+        // Calculate Win Rate using direction-aware P&L
         const closed = tradesData.filter(t => t.status === 'CLOSED');
-        const wins = closed.filter(t => Number(t.pnl || 0) > 0);
+        const wins = closed.filter(t => computePnl(t as Trade) > 0);
         const calculatedWinRate = closed.length > 0 ? (wins.length / closed.length) * 100 : 0.0;
         const active = tradesData.filter(t => t.status === 'OPEN').length;
-        const realizedPnl = closed.reduce((acc, curr) => acc + Number(curr.pnl || 0), 0);
+        const realizedPnl = closed.reduce((acc, curr) => acc + computePnl(curr as Trade), 0);
         
         if (summaryData) {
           setMetrics({
@@ -631,7 +640,6 @@ export default function Dashboard() {
       .sort((a, b) => new Date(a.exit_time || "").getTime() - new Date(b.exit_time || "").getTime());
 
     let startingEquity = 100000.00;
-    // Always start 7 days back so baseline is visible even with no trades
     const baselineTime = Math.floor((Date.now() - 3600 * 24 * 7 * 1000) / 1000);
     const equityCurveData: { time: any; value: number }[] = [
       { time: baselineTime as any, value: startingEquity }
@@ -639,7 +647,7 @@ export default function Dashboard() {
 
     if (closed.length > 0) {
       closed.forEach(t => {
-        startingEquity += Number(t.pnl || 0);
+        startingEquity += computePnl(t);
         equityCurveData.push({
           time: Math.floor(new Date(t.exit_time || "").getTime() / 1000) as any,
           value: startingEquity
@@ -647,7 +655,6 @@ export default function Dashboard() {
       });
     }
 
-    // Always cap with current time so line is visible
     const now = Math.floor(Date.now() / 1000);
     const lastPoint = equityCurveData[equityCurveData.length - 1];
     if (lastPoint.time < now) {
@@ -847,18 +854,18 @@ export default function Dashboard() {
     liveUnrealizedPnl = delta * openPosition.quantity;
   }
 
-  // Portfolio-wide metrics (all trades, all indices)
+  // Portfolio-wide metrics (all trades, all indices) — uses direction-aware P&L
   const allClosed = trades.filter(t => t.status === 'CLOSED');
-  const allWins = allClosed.filter(t => Number(t.pnl || 0) > 0);
+  const allWins = allClosed.filter(t => computePnl(t) > 0);
   const portfolioWinRate = allClosed.length > 0 ? Number(((allWins.length / allClosed.length) * 100).toFixed(2)) : 0.0;
-  const portfolioRealizedPnl = allClosed.reduce((acc, curr) => acc + Number(curr.pnl || 0), 0);
+  const portfolioRealizedPnl = allClosed.reduce((acc, curr) => acc + computePnl(curr), 0);
 
-  // Per-asset filtered trades — used for the chart-asset specific ledger
+  // Per-asset filtered trades — for the chart tab & performance tab
   const filteredTrades = trades.filter(t => isAssetMatch(selectedAsset, t.symbol));
   const filteredClosed = filteredTrades.filter(t => t.status === 'CLOSED');
-  const filteredWins = filteredClosed.filter(t => Number(t.pnl || 0) > 0);
+  const filteredWins = filteredClosed.filter(t => computePnl(t) > 0);
   const filteredWinRate = filteredClosed.length > 0 ? Number(((filteredWins.length / filteredClosed.length) * 100).toFixed(2)) : 0.0;
-  const filteredRealizedPnl = filteredClosed.reduce((acc, curr) => acc + Number(curr.pnl || 0), 0);
+  const filteredRealizedPnl = filteredClosed.reduce((acc, curr) => acc + computePnl(curr), 0);
 
   if (!mounted) {
     return (
@@ -1380,9 +1387,9 @@ export default function Dashboard() {
 
                         <div className="pt-2 border-t border-slate-850/30 flex items-center justify-between">
                           <span className="text-slate-500 uppercase tracking-widest text-[8px]">PnL Outcome</span>
-                          <span className={`text-xs font-black ${Number(t.pnl || 0) >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                          <span className={`text-xs font-black ${computePnl(t) >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
                             {t.status === 'CLOSED' 
-                              ? `₹${Number(t.pnl).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`
+                              ? `${computePnl(t) >= 0 ? '+' : ''}₹${computePnl(t).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`
                               : 'RISK MITIGATED'
                             }
                           </span>
