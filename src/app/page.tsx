@@ -215,14 +215,29 @@ const SYMBOL_MAP: Record<string, string[]> = {
 
 const isAssetMatch = (assetVal: string, symbol: string) => {
   if (!assetVal || !symbol) return false;
+  
+  const upperSymbol = symbol.toUpperCase();
+  const upperAsset = assetVal.toUpperCase();
+
   // Check direct map first (handles ^NSEI <-> "NIFTY 50" etc.)
   const mapped = SYMBOL_MAP[assetVal];
   if (mapped) {
-    return mapped.some(m => m.toUpperCase() === symbol.toUpperCase());
+    if (mapped.some(m => m.toUpperCase() === upperSymbol)) return true;
   }
+  
+  // Custom prefix/partial match logic for indices:
+  if (assetVal === '^NSEI') {
+    // If the symbol starts with "NIFTY" and doesn't contain "BANK", it's Nifty
+    if (upperSymbol.startsWith('NIFTY') && !upperSymbol.includes('BANK')) return true;
+  }
+  if (assetVal === '^NSEBANK') {
+    // If the symbol starts with "BANK" or contains "BANKNIFTY" or "BANK NIFTY", it's Bank Nifty
+    if (upperSymbol.startsWith('BANK') || upperSymbol.includes('BANKNIFTY') || upperSymbol.includes('BANK NIFTY')) return true;
+  }
+  
   // Reverse map: if symbol is in any map value, check if assetVal matches the key
   for (const [key, vals] of Object.entries(SYMBOL_MAP)) {
-    if (vals.some(v => v.toUpperCase() === symbol.toUpperCase())) {
+    if (vals.some(v => v.toUpperCase() === upperSymbol)) {
       return key === assetVal;
     }
   }
