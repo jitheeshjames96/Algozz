@@ -1163,13 +1163,13 @@ export default function Dashboard() {
                     <div className="flex justify-between mb-2">
                       <span className="text-slate-400 uppercase tracking-widest text-[9px]">Winning Trades</span>
                       <span className="text-emerald-400 font-bold">
-                        {filteredTrades.filter(t => t.status === 'CLOSED' && Number(t.pnl || 0) > 0).length}
+                        {filteredTrades.filter(t => t.status === 'CLOSED' && computePnl(t as Trade) > 0).length}
                       </span>
                     </div>
                     <div className="flex justify-between mb-2">
                       <span className="text-slate-400 uppercase tracking-widest text-[9px]">Losing Trades</span>
                       <span className="text-rose-400 font-bold">
-                        {filteredTrades.filter(t => t.status === 'CLOSED' && Number(t.pnl || 0) <= 0).length}
+                        {filteredTrades.filter(t => t.status === 'CLOSED' && computePnl(t as Trade) <= 0).length}
                       </span>
                     </div>
                     <div className="flex justify-between border-t border-slate-800 pt-2">
@@ -1320,7 +1320,7 @@ export default function Dashboard() {
                 let badgeClass = "bg-cyan-500/10 text-cyan-400 border border-cyan-500/25";
                 
                 if (t.status === 'CLOSED') {
-                  const closedPnl = Number(t.pnl || 0);
+                  const closedPnl = computePnl(t);
                   if (closedPnl < 0) {
                     badgeText = "STOP LOSS";
                     badgeClass = "bg-rose-500/10 text-rose-400 border border-rose-500/25";
