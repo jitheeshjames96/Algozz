@@ -358,11 +358,15 @@ export default function Dashboard() {
   });
   
   const [trades, setTrades] = useState<Trade[]>([]);
-  const [ledgerFilter, setLedgerFilter] = useState<'ACTIVE' | 'TODAY' | 'WEEKLY' | 'MONTHLY' | 'ALL'>('ACTIVE');
+  const [ledgerFilter, setLedgerFilter] = useState<'TODAY' | 'WEEKLY' | 'MONTHLY' | 'ALL'>('TODAY');
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [activeChartTab, setActiveChartTab] = useState<'PRICE' | 'EQUITY' | 'PERFORMANCE'>('PRICE');
   const [expandedTradeId, setExpandedTradeId] = useState<string | null>(null);
 
-  // Get filtered trades for the Interactive Ledger
+  // Get active open trades
+  const activeTrades = trades.filter(t => t.status === 'OPEN');
+
+  // Get filtered closed trades for the Interactive Ledger history
   const ledgerFilteredTrades = (() => {
     const now = new Date();
     
@@ -379,8 +383,8 @@ export default function Dashboard() {
     monthlyStart.setHours(0, 0, 0, 0);
 
     return trades.filter(t => {
-      if (ledgerFilter === 'ACTIVE') {
-        return t.status === 'OPEN';
+      if (t.status !== 'CLOSED') {
+        return false;
       }
       
       const entryTime = new Date(t.entry_time);
@@ -1337,89 +1341,53 @@ export default function Dashboard() {
         </div>
 
         {/* RIGHT COLUMN: Interactive Ledger (1/3 width) */}
-        <div className="border border-slate-800 bg-[#070b15]/95 rounded-2xl p-4 shadow-2xl h-fit">
-          <div className="flex items-center justify-between border-b border-slate-800/80 pb-3 mb-4">
-            <div className="flex items-center gap-2">
-              <span className="inline-block h-3 w-3 rounded-full bg-cyan-500" />
-              <h2 className="text-xs font-bold font-mono tracking-widest text-slate-400 uppercase">INTERACTIVE LEDGER</h2>
-            </div>
-            <span className="text-[10px] text-slate-500 font-mono">click row to expand</span>
-          </div>
-
-          {/* Ledger Filter Tabs */}
-          <div className="grid grid-cols-5 gap-1 bg-slate-900/60 p-1 rounded-lg border border-slate-800/50 mb-4 font-mono text-[9px]">
-            {(['ACTIVE', 'TODAY', 'WEEKLY', 'MONTHLY', 'ALL'] as const).map((filter) => (
-              <button
-                key={filter}
-                onClick={() => setLedgerFilter(filter)}
-                className={`py-1.5 px-0.5 rounded-md font-bold text-center cursor-pointer transition-all ${
-                  ledgerFilter === filter
-                    ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/30'
-                    : 'text-slate-500 hover:text-slate-300 border border-transparent'
-                }`}
-              >
-                {filter}
-              </button>
-            ))}
-          </div>
-
-          {/* Ledger scrollable container */}
-          <div className="flex flex-col gap-3 max-h-[620px] overflow-y-auto pr-1 scrollbar-thin">
-            {ledgerFilteredTrades.length === 0 ? (
-              <div className="text-center py-12 text-slate-500 font-mono text-xs border border-dashed border-slate-850 rounded-xl bg-slate-900/10">
-                {ledgerFilter === 'ACTIVE' && "NO ACTIVE OPEN TRADES."}
-                {ledgerFilter === 'TODAY' && "NO TRADES EXECUTED TODAY."}
-                {ledgerFilter === 'WEEKLY' && "NO TRADES EXECUTED THIS WEEK."}
-                {ledgerFilter === 'MONTHLY' && "NO TRADES EXECUTED THIS MONTH."}
-                {ledgerFilter === 'ALL' && "NO TRADES FOUND IN SYSTEM LEDGER."}
+        <div className="flex flex-col gap-4 w-full">
+          
+          {/* ACTIVE TRADES (Current Ledger) - Always visible, fully expanded by default */}
+          <div className="border border-slate-800 bg-[#070b15]/95 rounded-2xl p-4 shadow-2xl h-fit">
+            <div className="flex items-center justify-between border-b border-slate-800/80 pb-3 mb-4">
+              <div className="flex items-center gap-2">
+                <span className="inline-block h-3 w-3 rounded-full bg-emerald-500 animate-pulse" />
+                <h2 className="text-xs font-bold font-mono tracking-widest text-slate-400 uppercase">ACTIVE LEDGER ({activeTrades.length})</h2>
               </div>
-            ) : (
-              ledgerFilteredTrades.map((t) => {
-                const isExpanded = expandedTradeId === t.id;
-                const formattedTime = new Date(t.entry_time).toLocaleTimeString('en-US', {
-                  hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
-                });
+              <span className="text-[10px] text-slate-500 font-mono">live tracking</span>
+            </div>
 
-                // Determine badge style
-                let badgeText = "ORDER EXECUTED";
-                let badgeClass = "bg-cyan-500/10 text-cyan-400 border border-cyan-500/25";
-                
-                if (t.status === 'CLOSED') {
-                  const closedPnl = computePnl(t);
-                  if (closedPnl < 0) {
-                    badgeText = "STOP LOSS";
-                    badgeClass = "bg-rose-500/10 text-rose-400 border border-rose-500/25";
-                  } else {
-                    badgeText = "TAKE PROFIT";
-                    badgeClass = "bg-emerald-500/10 text-emerald-400 border border-emerald-500/25";
-                  }
-                }
+            <div className="flex flex-col gap-3 max-h-[350px] overflow-y-auto pr-1 scrollbar-thin">
+              {activeTrades.length === 0 ? (
+                <div className="text-center py-10 text-slate-500 font-mono text-[11px] border border-dashed border-slate-850 rounded-xl bg-slate-900/10">
+                  NO ACTIVE OPEN TRADES.
+                </div>
+              ) : (
+                activeTrades.map((t) => {
+                  const formattedTime = new Date(t.entry_time).toLocaleTimeString('en-US', {
+                    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+                  });
+                  const isCurrentAsset = isAssetMatch(selectedAsset, t.symbol);
 
-                return (
-                  <div 
-                    key={t.id}
-                    onClick={() => setExpandedTradeId(isExpanded ? null : t.id)}
-                    className={`border border-slate-850 bg-slate-900/20 hover:bg-slate-900/40 rounded-xl p-3.5 cursor-pointer transition-all duration-200 ${isExpanded ? 'border-cyan-500/40 shadow-lg shadow-cyan-950/10 bg-[#090d16]/80' : ''}`}
-                  >
-                    {/* Header: Badge & Time */}
-                    <div className="flex items-center justify-between mb-2">
-                      <span className={`text-[9px] font-bold font-mono px-2 py-0.5 rounded ${badgeClass}`}>
-                        {badgeText}
-                      </span>
-                      <span className="text-[10px] text-slate-500 font-mono">{formattedTime}</span>
-                    </div>
+                  return (
+                    <div 
+                      key={t.id}
+                      className="border border-cyan-500/35 bg-[#090d16]/80 rounded-xl p-3.5 shadow-md shadow-cyan-950/5"
+                    >
+                      {/* Header */}
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-[9px] font-bold font-mono px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/25 animate-pulse">
+                          ACTIVE RISK
+                        </span>
+                        <span className="text-[10px] text-slate-500 font-mono">{formattedTime}</span>
+                      </div>
 
-                    {/* Body: Symbol & Price */}
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-slate-200">{t.symbol} {t.direction === 'BUY' ? 'ATM CE' : 'ATM PE'}</span>
-                      <span className="text-xs font-bold font-mono text-slate-300">
-                        ₹{Number(t.entry_price).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                      </span>
-                    </div>
+                      {/* Body */}
+                      <div className="flex items-center justify-between mb-3">
+                        <span className="text-xs font-bold text-slate-200">{t.symbol} {t.direction === 'BUY' ? 'ATM CE' : 'ATM PE'}</span>
+                        <span className="text-xs font-bold font-mono text-slate-300">
+                          ₹{Number(t.entry_price).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                        </span>
+                      </div>
 
-                    {/* Expandable Section */}
-                    {isExpanded && (
-                      <div className="mt-3 pt-3 border-t border-slate-850/80 font-mono text-[10px] text-slate-400 space-y-2.5 animate-fadeIn">
+                      {/* Expanded Active Details */}
+                      <div className="pt-2 border-t border-slate-850/80 font-mono text-[10px] text-slate-400 space-y-2.5">
                         <div>
                           <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5">Setup Logic</span>
                           <span className="text-slate-300 font-semibold block bg-slate-900/50 p-1.5 rounded border border-slate-850/50 leading-relaxed">
@@ -1432,15 +1400,92 @@ export default function Dashboard() {
                           const parsed = parseSlTpFromLogic(t.setup_logic || "");
                           const slVal = parsed ? parsed.sl : (t.direction === 'BUY' ? Number(t.entry_price - 150) : Number(t.entry_price + 150));
                           const tpVal = parsed ? parsed.tp : (t.direction === 'BUY' ? Number(t.entry_price + 300) : Number(t.entry_price - 300));
-                          return (
-                            <div className="grid grid-cols-2 gap-3 bg-slate-950/60 p-2 rounded-lg border border-slate-850/50">
-                              <div>
-                                <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5">STOP LOSS TARGET</span>
-                                <span className="text-rose-400 font-bold font-mono text-[11px]">₹{slVal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                          
+                          if (!isCurrentAsset) {
+                            return (
+                              <div className="space-y-1.5">
+                                <div className="grid grid-cols-2 gap-3 bg-slate-950/60 p-2 rounded-lg border border-slate-850/50">
+                                  <div>
+                                    <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5">STOP LOSS</span>
+                                    <span className="text-rose-400 font-bold font-mono text-[11px]">₹{slVal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5 text-right">TAKE PROFIT</span>
+                                    <span className="text-emerald-400 font-bold font-mono text-[11px] block text-right">₹{tpVal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                                  </div>
+                                </div>
+                                <div className="text-center text-[9px] text-slate-500 bg-slate-900/40 py-1 rounded border border-slate-850/30">
+                                  Select {t.symbol} in dashboard to see live tracking.
+                                </div>
                               </div>
-                              <div>
-                                <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5 text-right">TAKE PROFIT TARGET</span>
-                                <span className="text-emerald-400 font-bold font-mono text-[11px] block text-right">₹{tpVal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                            );
+                          }
+
+                          // Selected asset match - show real-time progress slider
+                          const entry = Number(t.entry_price);
+                          const current = liveSpotPrice;
+                          const isBuy = t.direction === 'BUY';
+                          
+                          let progressPercent = 50;
+                          if (isBuy) {
+                            if (tpVal > slVal) {
+                              progressPercent = ((current - slVal) / (tpVal - slVal)) * 100;
+                            }
+                          } else {
+                            if (slVal > tpVal) {
+                              progressPercent = ((slVal - current) / (slVal - tpVal)) * 100;
+                            }
+                          }
+                          const clampedPercent = Math.max(0, Math.min(100, progressPercent));
+                          const currentUnrealized = isBuy ? (current - entry) * t.quantity : (entry - current) * t.quantity;
+
+                          return (
+                            <div className="space-y-2">
+                              <div className="grid grid-cols-2 gap-3 bg-slate-950/60 p-2 rounded-lg border border-slate-850/50">
+                                <div>
+                                  <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5">STOP LOSS</span>
+                                  <span className="text-rose-400 font-bold font-mono text-[11px]">₹{slVal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                                </div>
+                                <div>
+                                  <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5 text-right">TAKE PROFIT</span>
+                                  <span className="text-emerald-400 font-bold font-mono text-[11px] block text-right">₹{tpVal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                                </div>
+                              </div>
+
+                              {/* Progress bar */}
+                              <div className="bg-slate-950/50 p-2 rounded-lg border border-slate-850/30">
+                                <div className="flex justify-between text-[8px] text-slate-500 font-mono mb-1">
+                                  <span>SL</span>
+                                  <span>ENTRY (₹{entry.toFixed(1)})</span>
+                                  <span>TP</span>
+                                </div>
+                                <div className="relative h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
+                                  <div 
+                                    className="absolute top-0 bottom-0 bg-emerald-500/20"
+                                    style={{ left: isBuy ? '50%' : '0%', right: isBuy ? '0%' : '50%' }}
+                                  />
+                                  <div 
+                                    className="absolute top-0 bottom-0 bg-rose-500/20"
+                                    style={{ left: isBuy ? '0%' : '50%', right: isBuy ? '50%' : '0%' }}
+                                  />
+                                  <div 
+                                    className="absolute top-0 bottom-0 w-1.5 bg-cyan-400 shadow-md shadow-cyan-400/80 rounded-full transition-all duration-300"
+                                    style={{ left: `calc(${clampedPercent}% - 3px)` }}
+                                  />
+                                </div>
+                                <div className="flex justify-between text-[8px] text-slate-400 font-mono mt-1">
+                                  <span>₹{slVal.toFixed(1)}</span>
+                                  <span className="text-cyan-400 font-bold animate-pulse">LTP: ₹{current.toFixed(1)}</span>
+                                  <span>₹{tpVal.toFixed(1)}</span>
+                                </div>
+                              </div>
+
+                              {/* Live P&L outcome */}
+                              <div className="pt-2 border-t border-slate-850/30 flex items-center justify-between">
+                                <span className="text-slate-500 uppercase tracking-widest text-[8px]">Floating Return</span>
+                                <span className={`text-xs font-black ${currentUnrealized >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                                  {currentUnrealized >= 0 ? '+' : ''}₹{currentUnrealized.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                                </span>
                               </div>
                             </div>
                           );
@@ -1462,29 +1507,177 @@ export default function Dashboard() {
                             </div>
                           </div>
                           <div>
-                            <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5 text-right">Slip Offset</span>
+                            <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5 text-right">Lot Quantity</span>
                             <span className="text-slate-300 font-bold block text-right mt-0.5">
-                              {t.slippage ? `₹${Number(t.slippage).toFixed(2)} pts` : '—'}
+                              {t.quantity} Units
                             </span>
                           </div>
                         </div>
-
-                        <div className="pt-2 border-t border-slate-850/30 flex items-center justify-between">
-                          <span className="text-slate-500 uppercase tracking-widest text-[8px]">PnL Outcome</span>
-                          <span className={`text-xs font-black ${computePnl(t) >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
-                            {t.status === 'CLOSED' 
-                              ? `${computePnl(t) >= 0 ? '+' : ''}₹${computePnl(t).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`
-                              : 'RISK ACTIVE'
-                            }
-                          </span>
-                        </div>
                       </div>
-                    )}
-                  </div>
-                );
-              })
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+
+          {/* HISTORICAL TRADES - Collapsible by default */}
+          <div className="border border-slate-800 bg-[#070b15]/95 rounded-2xl p-4 shadow-2xl h-fit">
+            <button 
+              onClick={() => setIsHistoryOpen(!isHistoryOpen)}
+              className="w-full flex items-center justify-between border-b border-slate-800/80 pb-3 cursor-pointer group bg-transparent border-0 text-left"
+            >
+              <div className="flex items-center gap-2">
+                <span className="inline-block h-3 w-3 rounded-full bg-slate-600 transition-colors group-hover:bg-slate-400" />
+                <h2 className="text-xs font-bold font-mono tracking-widest text-slate-400 uppercase group-hover:text-slate-200 transition-colors">
+                  PAST TRADES ({trades.filter(t => t.status === 'CLOSED').length})
+                </h2>
+              </div>
+              <div className="flex items-center gap-2 font-mono text-[10px] text-slate-500 group-hover:text-slate-300 transition-colors">
+                <span>{isHistoryOpen ? 'COLLAPSE' : 'EXPAND'}</span>
+                <span className="transform transition-transform duration-200" style={{ transform: isHistoryOpen ? 'rotate(90deg)' : 'rotate(0deg)' }}>▶</span>
+              </div>
+            </button>
+
+            {isHistoryOpen && (
+              <div className="mt-4 space-y-4 animate-fadeIn">
+                {/* History Filter Tabs */}
+                <div className="grid grid-cols-4 gap-1 bg-slate-900/60 p-1 rounded-lg border border-slate-800/50 font-mono text-[9px]">
+                  {(['TODAY', 'WEEKLY', 'MONTHLY', 'ALL'] as const).map((filter) => (
+                    <button
+                      key={filter}
+                      onClick={() => setLedgerFilter(filter)}
+                      className={`py-1.5 px-0.5 rounded-md font-bold text-center cursor-pointer transition-all ${
+                        ledgerFilter === filter
+                          ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/30'
+                          : 'text-slate-500 hover:text-slate-300 border border-transparent'
+                      }`}
+                    >
+                      {filter}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Ledger scrollable container */}
+                <div className="flex flex-col gap-3 max-h-[400px] overflow-y-auto pr-1 scrollbar-thin">
+                  {ledgerFilteredTrades.length === 0 ? (
+                    <div className="text-center py-10 text-slate-500 font-mono text-xs border border-dashed border-slate-850 rounded-xl bg-slate-900/10">
+                      {ledgerFilter === 'TODAY' && "NO TRADES EXECUTED TODAY."}
+                      {ledgerFilter === 'WEEKLY' && "NO TRADES EXECUTED THIS WEEK."}
+                      {ledgerFilter === 'MONTHLY' && "NO TRADES EXECUTED THIS MONTH."}
+                      {ledgerFilter === 'ALL' && "NO TRADES FOUND IN SYSTEM LEDGER."}
+                    </div>
+                  ) : (
+                    ledgerFilteredTrades.map((t) => {
+                      const isExpanded = expandedTradeId === t.id;
+                      const formattedTime = new Date(t.entry_time).toLocaleTimeString('en-US', {
+                        hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+                      });
+
+                      // Determine badge style
+                      let badgeText = "CLOSED";
+                      let badgeClass = "bg-slate-500/10 text-slate-400 border border-slate-500/25";
+                      
+                      const closedPnl = computePnl(t);
+                      if (closedPnl < 0) {
+                        badgeText = "STOP LOSS";
+                        badgeClass = "bg-rose-500/10 text-rose-400 border border-rose-500/25";
+                      } else {
+                        badgeText = "TAKE PROFIT";
+                        badgeClass = "bg-emerald-500/10 text-emerald-400 border border-emerald-500/25";
+                      }
+
+                      return (
+                        <div 
+                          key={t.id}
+                          onClick={() => setExpandedTradeId(isExpanded ? null : t.id)}
+                          className={`border border-slate-850 bg-slate-900/20 hover:bg-slate-900/40 rounded-xl p-3.5 cursor-pointer transition-all duration-200 ${isExpanded ? 'border-cyan-500/40 shadow-lg shadow-cyan-950/10 bg-[#090d16]/80' : ''}`}
+                        >
+                          {/* Header: Badge & Time */}
+                          <div className="flex items-center justify-between mb-2">
+                            <span className={`text-[9px] font-bold font-mono px-2 py-0.5 rounded ${badgeClass}`}>
+                              {badgeText}
+                            </span>
+                            <span className="text-[10px] text-slate-500 font-mono">{formattedTime}</span>
+                          </div>
+
+                          {/* Body: Symbol & Price */}
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-bold text-slate-200">{t.symbol} {t.direction === 'BUY' ? 'ATM CE' : 'ATM PE'}</span>
+                            <span className="text-xs font-bold font-mono text-slate-300">
+                              ₹{Number(t.entry_price).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                            </span>
+                          </div>
+
+                          {/* Expandable Section */}
+                          {isExpanded && (
+                            <div className="mt-3 pt-3 border-t border-slate-850/80 font-mono text-[10px] text-slate-400 space-y-2.5 animate-fadeIn">
+                              <div>
+                                <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5">Setup Logic</span>
+                                <span className="text-slate-300 font-semibold block bg-slate-900/50 p-1.5 rounded border border-slate-850/50 leading-relaxed">
+                                  {t.setup_logic || "Algorithm alignment trigger."}
+                                </span>
+                              </div>
+
+                              {/* Trade SL & TP Targets Display */}
+                              {(() => {
+                                const parsed = parseSlTpFromLogic(t.setup_logic || "");
+                                const slVal = parsed ? parsed.sl : (t.direction === 'BUY' ? Number(t.entry_price - 150) : Number(t.entry_price + 150));
+                                const tpVal = parsed ? parsed.tp : (t.direction === 'BUY' ? Number(t.entry_price + 300) : Number(t.entry_price - 300));
+                                return (
+                                  <div className="grid grid-cols-2 gap-3 bg-slate-950/60 p-2 rounded-lg border border-slate-850/50">
+                                    <div>
+                                      <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5">STOP LOSS TARGET</span>
+                                      <span className="text-rose-400 font-bold font-mono text-[11px]">₹{slVal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                                    </div>
+                                    <div>
+                                      <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5 text-right">TAKE PROFIT TARGET</span>
+                                      <span className="text-emerald-400 font-bold font-mono text-[11px] block text-right">₹{tpVal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                                    </div>
+                                  </div>
+                                );
+                              })()}
+
+                              <div className="flex items-center justify-between gap-4">
+                                <div>
+                                  <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5">Execution Hash</span>
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="text-cyan-400 font-bold bg-slate-900 px-1.5 py-0.5 rounded border border-slate-850/50">
+                                      {(t.execution_hash || "").slice(0, 10)}
+                                    </span>
+                                    <button 
+                                      onClick={(e) => { e.stopPropagation(); copyToClipboard(t.execution_hash || ""); }}
+                                      className="text-[9px] text-slate-500 hover:text-white cursor-pointer bg-slate-800 px-1 rounded transition-colors"
+                                    >
+                                      {copiedHash === t.execution_hash ? 'copied' : 'copy'}
+                                    </button>
+                                  </div>
+                                </div>
+                                <div>
+                                  <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5 text-right">Slip Offset</span>
+                                  <span className="text-slate-300 font-bold block text-right mt-0.5">
+                                    {t.slippage ? `₹${Number(t.slippage).toFixed(2)} pts` : '—'}
+                                  </span>
+                                </div>
+                              </div>
+
+                              <div className="pt-2 border-t border-slate-850/30 flex items-center justify-between">
+                                <span className="text-slate-500 uppercase tracking-widest text-[8px]">PnL Outcome</span>
+                                <span className={`text-xs font-black ${closedPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                                  {closedPnl >= 0 ? '+' : ''}₹{closedPnl.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                                </span>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
             )}
           </div>
+
         </div>
 
       </div>
