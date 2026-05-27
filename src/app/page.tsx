@@ -187,12 +187,29 @@ const ASSETS = [
   { value: 'BTC-USD', label: 'Bitcoin USD', category: 'Crypto' },
 ];
 
-// Helper Functions for Performance Analytics
+// Map between chart ticker values and DB symbol names
+const SYMBOL_MAP: Record<string, string[]> = {
+  '^NSEI':    ['NIFTY 50', 'NIFTY50', 'NSE:NIFTY50-INDEX'],
+  '^NSEBANK': ['BANK NIFTY', 'BANKNIFTY', 'NSE:NIFTYBANK-INDEX'],
+  '^BSESN':   ['SENSEX', 'BSE:SENSEX'],
+};
+
 const isAssetMatch = (assetVal: string, symbol: string) => {
   if (!assetVal || !symbol) return false;
-  const cleanAsset = assetVal.replace('.NS', '').replace('NSE:', '').replace('MCX:', '').replace('CDS:', '').replace('BSE:', '').toUpperCase();
-  const cleanSymbol = symbol.replace('.NS', '').replace('NSE:', '').replace('MCX:', '').replace('CDS:', '').replace('BSE:', '').toUpperCase();
-  return cleanAsset === cleanSymbol || assetVal === symbol;
+  // Check direct map first (handles ^NSEI <-> "NIFTY 50" etc.)
+  const mapped = SYMBOL_MAP[assetVal];
+  if (mapped) {
+    return mapped.some(m => m.toUpperCase() === symbol.toUpperCase());
+  }
+  // Reverse map: if symbol is in any map value, check if assetVal matches the key
+  for (const [key, vals] of Object.entries(SYMBOL_MAP)) {
+    if (vals.some(v => v.toUpperCase() === symbol.toUpperCase())) {
+      return key === assetVal;
+    }
+  }
+  // Fallback: strip exchange prefixes and compare
+  const clean = (s: string) => s.replace(/\.(NS|BO)$/i, '').replace(/^(NSE:|BSE:|MCX:|CDS:)/, '').toUpperCase();
+  return clean(assetVal) === clean(symbol) || assetVal === symbol;
 };
 
 const getMarketStatusForAsset = (assetVal: string): 'OPEN' | 'CLOSED' => {
@@ -803,13 +820,12 @@ export default function Dashboard() {
     }
   }, [resolution, selectedAsset]);
 
-  // Reactive Equity Curve Rebuild
+  // Reactive Equity Curve Rebuild — use ALL trades for portfolio equity
   useEffect(() => {
     if (mounted && trades) {
-      const filtered = trades.filter(t => isAssetMatch(selectedAsset, t.symbol));
-      updateEquityCurveChart(filtered);
+      updateEquityCurveChart(trades);
     }
-  }, [trades, selectedAsset, mounted]);
+  }, [trades, mounted]);
 
   const copyToClipboard = (hash: string) => {
     navigator.clipboard.writeText(hash);
@@ -831,12 +847,17 @@ export default function Dashboard() {
     liveUnrealizedPnl = delta * openPosition.quantity;
   }
 
-  // Filter trades for metrics and tabs
+  // Portfolio-wide metrics (all trades, all indices)
+  const allClosed = trades.filter(t => t.status === 'CLOSED');
+  const allWins = allClosed.filter(t => Number(t.pnl || 0) > 0);
+  const portfolioWinRate = allClosed.length > 0 ? Number(((allWins.length / allClosed.length) * 100).toFixed(2)) : 0.0;
+  const portfolioRealizedPnl = allClosed.reduce((acc, curr) => acc + Number(curr.pnl || 0), 0);
+
+  // Per-asset filtered trades — used for the chart-asset specific ledger
   const filteredTrades = trades.filter(t => isAssetMatch(selectedAsset, t.symbol));
   const filteredClosed = filteredTrades.filter(t => t.status === 'CLOSED');
   const filteredWins = filteredClosed.filter(t => Number(t.pnl || 0) > 0);
   const filteredWinRate = filteredClosed.length > 0 ? Number(((filteredWins.length / filteredClosed.length) * 100).toFixed(2)) : 0.0;
-  
   const filteredRealizedPnl = filteredClosed.reduce((acc, curr) => acc + Number(curr.pnl || 0), 0);
 
   if (!mounted) {
@@ -926,25 +947,25 @@ export default function Dashboard() {
         <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
           <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Net Equity</span>
           <span className="text-xl md:text-2xl font-black text-slate-100 font-mono">
-            ₹{(100000.00 + filteredRealizedPnl).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+            ₹{(100000.00 + portfolioRealizedPnl).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
           </span>
           <div className="text-[10px] text-slate-500 mt-1 font-mono">
             Base: ₹1,00,000.00
           </div>
         </div>
 
-        {/* Realized P&L */}
+        {/* Realized P&L — portfolio total */}
         <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
           <div className="absolute top-3 right-3">
             <span className="text-[9px] font-bold font-mono px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">BOOKED</span>
           </div>
           <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Realized P&L</span>
-          <span className={`text-xl md:text-2xl font-black font-mono ${filteredRealizedPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
-            {filteredRealizedPnl >= 0 ? "+" : ""}
-            ₹{filteredRealizedPnl.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+          <span className={`text-xl md:text-2xl font-black font-mono ${portfolioRealizedPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+            {portfolioRealizedPnl >= 0 ? "+" : ""}
+            ₹{portfolioRealizedPnl.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
           </span>
           <div className="text-[10px] text-slate-500 mt-1 font-mono">
-            Closed trades profit/loss
+            All indices combined
           </div>
         </div>
 
@@ -967,11 +988,11 @@ export default function Dashboard() {
         <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
           <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Today's Session</span>
           <span className="text-xl md:text-2xl font-black text-slate-100 font-mono">
-            {filteredTrades.length}
+            {trades.length}
           </span>
           <div className="text-[10px] text-slate-500 mt-1 font-mono flex items-center justify-between">
             <span>Total Trades</span>
-            <span className="text-cyan-400 font-semibold">{filteredWinRate}% Win Rate</span>
+            <span className="text-cyan-400 font-semibold">{portfolioWinRate}% Win</span>
           </div>
         </div>
 
@@ -984,7 +1005,7 @@ export default function Dashboard() {
           <div className="text-[10px] mt-1 font-mono flex items-center justify-between">
             <span className="text-slate-500">Contracts</span>
             <span className={metrics.safety_state === 'SAFE' ? 'text-emerald-400 font-semibold' : 'text-rose-400 font-black animate-pulse'}>
-              {metrics.safety_state === 'SAFE' ? 'SAFE' : 'HALT'}
+              {metrics.safety_state}
             </span>
           </div>
         </div>
@@ -1274,14 +1295,14 @@ export default function Dashboard() {
             <span className="text-[10px] text-slate-500 font-mono">click row to expand</span>
           </div>
 
-          {/* Ledger scrollable container */}
+          {/* Ledger scrollable container — shows ALL trades across all indices */}
           <div className="flex flex-col gap-3 max-h-[620px] overflow-y-auto pr-1 scrollbar-thin">
-            {filteredTrades.length === 0 ? (
+            {trades.length === 0 ? (
               <div className="text-center py-12 text-slate-500 font-mono text-xs border border-dashed border-slate-850 rounded-xl bg-slate-900/10">
-                NO TRADES IN ACTIVE LEDGER FOR {selectedAssetLabel.toUpperCase()}.
+                NO TRADES EXECUTED YET. ENGINE IS SCANNING.
               </div>
             ) : (
-              filteredTrades.map((t) => {
+              trades.map((t) => {
                 const isExpanded = expandedTradeId === t.id;
                 const formattedTime = new Date(t.entry_time).toLocaleTimeString('en-US', {
                   hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
