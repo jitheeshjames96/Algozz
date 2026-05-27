@@ -1272,7 +1272,7 @@ export default function Dashboard() {
                   </thead>
                   <tbody>
                     <tr className="border-b border-slate-850 hover:bg-slate-900/30">
-                      <td className="py-3 px-2 font-bold text-slate-200">{openPosition.symbol}</td>
+                      <td className="py-3 px-2 font-bold text-slate-200">{openPosition.symbol} {openPosition.direction === 'BUY' ? 'ATM CE' : 'ATM PE'}</td>
                       <td className="py-3 px-2">
                         <span className={`px-1.5 py-0.5 rounded font-bold text-[9px] ${openPosition.direction === 'BUY' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'}`}>
                           {openPosition.direction}
@@ -1346,7 +1346,7 @@ export default function Dashboard() {
 
                     {/* Body: Symbol & Price */}
                     <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-slate-200">{t.symbol}</span>
+                      <span className="text-xs font-bold text-slate-200">{t.symbol} {t.direction === 'BUY' ? 'ATM CE' : 'ATM PE'}</span>
                       <span className="text-xs font-bold font-mono text-slate-300">
                         ₹{Number(t.entry_price).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                       </span>
@@ -1398,7 +1398,7 @@ export default function Dashboard() {
                         {t.status === 'CLOSED' && (
                           <div className="bg-[#0f1d17]/30 border border-emerald-950/20 p-2 rounded text-[10px] text-slate-400 leading-normal">
                             <span className="text-emerald-400 font-bold block uppercase text-[8px] mb-0.5">BROKER RAW RESPONSE</span>
-                            {t.direction} {t.symbol}{"_ATM_"}{t.direction === 'BUY' ? 'CE' : 'PE'} | SL: {Number(t.entry_price - 20).toFixed(1)} | TP: {Number(t.entry_price + 40).toFixed(1)}
+                            {"BUY "} {t.symbol}{"_ATM_"}{t.direction === 'BUY' ? 'CE' : 'PE'} | SL: {t.direction === 'BUY' ? Number(t.entry_price - 150).toFixed(1) : Number(t.entry_price + 150).toFixed(1)} | TP: {t.direction === 'BUY' ? Number(t.entry_price + 300).toFixed(1) : Number(t.entry_price - 300).toFixed(1)}
                           </div>
                         )}
                       </div>
