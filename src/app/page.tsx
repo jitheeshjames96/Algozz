@@ -36,6 +36,16 @@ const computePnl = (t: Trade): number => {
   return delta * Number(t.quantity);
 };
 
+// Helper to parse SL/TP from setup_logic metadata
+const parseSlTpFromLogic = (setupLogic: string) => {
+  if (!setupLogic) return null;
+  const match = setupLogic.match(/\[SL:\s*([0-9.]+)\s*\|\s*TP:\s*([0-9.]+)\]/);
+  if (match) {
+    return { sl: parseFloat(match[1]), tp: parseFloat(match[2]) };
+  }
+  return null;
+};
+
 interface AccountMetrics {
   account_capital: number;
   win_rate: number;
@@ -348,8 +358,42 @@ export default function Dashboard() {
   });
   
   const [trades, setTrades] = useState<Trade[]>([]);
+  const [ledgerFilter, setLedgerFilter] = useState<'ACTIVE' | 'TODAY' | 'WEEKLY' | 'MONTHLY' | 'ALL'>('ACTIVE');
   const [activeChartTab, setActiveChartTab] = useState<'PRICE' | 'EQUITY' | 'PERFORMANCE'>('PRICE');
   const [expandedTradeId, setExpandedTradeId] = useState<string | null>(null);
+
+  // Get filtered trades for the Interactive Ledger
+  const ledgerFilteredTrades = (() => {
+    const now = new Date();
+    
+    // Start of today in local time
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+
+    // Start of week (7 days ago)
+    const weeklyStart = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    weeklyStart.setHours(0, 0, 0, 0);
+
+    // Start of month (30 days ago)
+    const monthlyStart = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    monthlyStart.setHours(0, 0, 0, 0);
+
+    return trades.filter(t => {
+      if (ledgerFilter === 'ACTIVE') {
+        return t.status === 'OPEN';
+      }
+      
+      const entryTime = new Date(t.entry_time);
+      if (ledgerFilter === 'TODAY') {
+        return entryTime >= todayStart;
+      } else if (ledgerFilter === 'WEEKLY') {
+        return entryTime >= weeklyStart;
+      } else if (ledgerFilter === 'MONTHLY') {
+        return entryTime >= monthlyStart;
+      }
+      return true; // 'ALL'
+    });
+  })();
   const [isLive, setIsLive] = useState(false);
   const [marketState, setMarketState] = useState<'OPEN' | 'CLOSED'>('CLOSED');
   const [copiedHash, setCopiedHash] = useState<string | null>(null);
@@ -1302,14 +1346,35 @@ export default function Dashboard() {
             <span className="text-[10px] text-slate-500 font-mono">click row to expand</span>
           </div>
 
-          {/* Ledger scrollable container — shows ALL trades across all indices */}
+          {/* Ledger Filter Tabs */}
+          <div className="grid grid-cols-5 gap-1 bg-slate-900/60 p-1 rounded-lg border border-slate-800/50 mb-4 font-mono text-[9px]">
+            {(['ACTIVE', 'TODAY', 'WEEKLY', 'MONTHLY', 'ALL'] as const).map((filter) => (
+              <button
+                key={filter}
+                onClick={() => setLedgerFilter(filter)}
+                className={`py-1.5 px-0.5 rounded-md font-bold text-center cursor-pointer transition-all ${
+                  ledgerFilter === filter
+                    ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/30'
+                    : 'text-slate-500 hover:text-slate-300 border border-transparent'
+                }`}
+              >
+                {filter}
+              </button>
+            ))}
+          </div>
+
+          {/* Ledger scrollable container */}
           <div className="flex flex-col gap-3 max-h-[620px] overflow-y-auto pr-1 scrollbar-thin">
-            {trades.length === 0 ? (
+            {ledgerFilteredTrades.length === 0 ? (
               <div className="text-center py-12 text-slate-500 font-mono text-xs border border-dashed border-slate-850 rounded-xl bg-slate-900/10">
-                NO TRADES EXECUTED YET. ENGINE IS SCANNING.
+                {ledgerFilter === 'ACTIVE' && "NO ACTIVE OPEN TRADES."}
+                {ledgerFilter === 'TODAY' && "NO TRADES EXECUTED TODAY."}
+                {ledgerFilter === 'WEEKLY' && "NO TRADES EXECUTED THIS WEEK."}
+                {ledgerFilter === 'MONTHLY' && "NO TRADES EXECUTED THIS MONTH."}
+                {ledgerFilter === 'ALL' && "NO TRADES FOUND IN SYSTEM LEDGER."}
               </div>
             ) : (
-              trades.map((t) => {
+              ledgerFilteredTrades.map((t) => {
                 const isExpanded = expandedTradeId === t.id;
                 const formattedTime = new Date(t.entry_time).toLocaleTimeString('en-US', {
                   hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
@@ -1362,6 +1427,25 @@ export default function Dashboard() {
                           </span>
                         </div>
 
+                        {/* Trade SL & TP Targets Display */}
+                        {(() => {
+                          const parsed = parseSlTpFromLogic(t.setup_logic || "");
+                          const slVal = parsed ? parsed.sl : (t.direction === 'BUY' ? Number(t.entry_price - 150) : Number(t.entry_price + 150));
+                          const tpVal = parsed ? parsed.tp : (t.direction === 'BUY' ? Number(t.entry_price + 300) : Number(t.entry_price - 300));
+                          return (
+                            <div className="grid grid-cols-2 gap-3 bg-slate-950/60 p-2 rounded-lg border border-slate-850/50">
+                              <div>
+                                <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5">STOP LOSS TARGET</span>
+                                <span className="text-rose-400 font-bold font-mono text-[11px]">₹{slVal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                              </div>
+                              <div>
+                                <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5 text-right">TAKE PROFIT TARGET</span>
+                                <span className="text-emerald-400 font-bold font-mono text-[11px] block text-right">₹{tpVal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                              </div>
+                            </div>
+                          );
+                        })()}
+
                         <div className="flex items-center justify-between gap-4">
                           <div>
                             <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5">Execution Hash</span>
@@ -1390,17 +1474,10 @@ export default function Dashboard() {
                           <span className={`text-xs font-black ${computePnl(t) >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
                             {t.status === 'CLOSED' 
                               ? `${computePnl(t) >= 0 ? '+' : ''}₹${computePnl(t).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`
-                              : 'RISK MITIGATED'
+                              : 'RISK ACTIVE'
                             }
                           </span>
                         </div>
-
-                        {t.status === 'CLOSED' && (
-                          <div className="bg-[#0f1d17]/30 border border-emerald-950/20 p-2 rounded text-[10px] text-slate-400 leading-normal">
-                            <span className="text-emerald-400 font-bold block uppercase text-[8px] mb-0.5">BROKER RAW RESPONSE</span>
-                            {"BUY "} {t.symbol}{"_ATM_"}{t.direction === 'BUY' ? 'CE' : 'PE'} | SL: {t.direction === 'BUY' ? Number(t.entry_price - 150).toFixed(1) : Number(t.entry_price + 150).toFixed(1)} | TP: {t.direction === 'BUY' ? Number(t.entry_price + 300).toFixed(1) : Number(t.entry_price - 300).toFixed(1)}
-                          </div>
-                        )}
                       </div>
                     )}
                   </div>
