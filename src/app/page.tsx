@@ -46,6 +46,32 @@ const parseSlTpFromLogic = (setupLogic: string) => {
   return null;
 };
 
+// Forex & Indian Currency Formatters
+const formatCurrency = (val: number, env: 'INDIAN' | 'FOREX', decimals: number = 2) => {
+  const isForex = env === 'FOREX';
+  const prefix = isForex ? '$' : '₹';
+  const locale = isForex ? 'en-US' : 'en-IN';
+  return `${prefix}${Number(val).toLocaleString(locale, { 
+    minimumFractionDigits: decimals, 
+    maximumFractionDigits: decimals 
+  })}`;
+};
+
+const formatCurrencyCompact = (val: number, env: 'INDIAN' | 'FOREX') => {
+  const isForex = env === 'FOREX';
+  const prefix = isForex ? '$' : '₹';
+  const locale = isForex ? 'en-US' : 'en-IN';
+  return `${prefix}${Number(val).toLocaleString(locale, { 
+    maximumFractionDigits: 0 
+  })}`;
+};
+
+const formatPrice = (val: number, env: 'INDIAN' | 'FOREX') => {
+  const isForex = env === 'FOREX';
+  const decimals = isForex ? 4 : 2;
+  return formatCurrency(val, env, decimals);
+};
+
 interface AccountMetrics {
   account_capital: number;
   win_rate: number;
@@ -57,7 +83,15 @@ interface AccountMetrics {
 }
 
 // Supported Assets Configuration
-const ASSETS = [
+const FOREX_ASSETS = [
+  { value: 'EURUSD=X', label: 'EUR / USD', category: 'Forex Pairs' },
+  { value: 'GBPUSD=X', label: 'GBP / USD', category: 'Forex Pairs' },
+  { value: 'USDJPY=X', label: 'USD / JPY', category: 'Forex Pairs' },
+  { value: 'AUDUSD=X', label: 'AUD / USD', category: 'Forex Pairs' },
+  { value: 'USDCAD=X', label: 'USD / CAD', category: 'Forex Pairs' },
+];
+
+const INDIAN_ASSETS = [
   { value: '^NSEI', label: 'NIFTY 50', category: 'Indian Indices' },
   { value: '^NSEBANK', label: 'BANK NIFTY', category: 'Indian Indices' },
   { value: '^BSESN', label: 'SENSEX', category: 'Indian Indices' },
@@ -246,9 +280,9 @@ const isAssetMatch = (assetVal: string, symbol: string) => {
   return clean(assetVal) === clean(symbol) || assetVal === symbol;
 };
 
-const getMarketStatusForAsset = (assetVal: string): 'OPEN' | 'CLOSED' => {
+const getMarketStatusForAsset = (assetVal: string, assetsList: typeof INDIAN_ASSETS): 'OPEN' | 'CLOSED' => {
   const now = new Date();
-  const asset = ASSETS.find(a => a.value === assetVal);
+  const asset = assetsList.find(a => a.value === assetVal);
   const category = asset ? asset.category : '';
   
   if (category === 'Crypto') {
@@ -358,6 +392,22 @@ const calculateDailyBreakdown = (tradesList: Trade[]) => {
 
 export default function Dashboard() {
   const [mounted, setMounted] = useState(false);
+  const [marketEnv, setMarketEnv] = useState<'INDIAN' | 'FOREX'>('INDIAN');
+  const ASSETS = marketEnv === 'FOREX' ? FOREX_ASSETS : INDIAN_ASSETS;
+  const startingCapital = marketEnv === 'FOREX' ? 10000.00 : 100000.00;
+
+  // Auto-switch default asset on environment change
+  useEffect(() => {
+    if (marketEnv === 'FOREX') {
+      setSelectedAsset('EURUSD=X');
+      setSelectedAssetLabel('EUR / USD');
+      setResolution('5m');
+    } else {
+      setSelectedAsset('^NSEI');
+      setSelectedAssetLabel('NIFTY 50');
+      setResolution('15m');
+    }
+  }, [marketEnv]);
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const equityChartContainerRef = useRef<HTMLDivElement>(null);
   
@@ -478,16 +528,19 @@ export default function Dashboard() {
   // Fetch all dashboard data from Supabase and FastAPI
   const loadData = async () => {
     try {
-      // 1. Fetch metrics from Supabase /account_summary
+      const summaryTable = marketEnv === 'FOREX' ? 'forex_account_summary' : 'account_summary';
+      const tradesTable = marketEnv === 'FOREX' ? 'forex_trades' : 'trades';
+
+      // 1. Fetch metrics from Supabase
       const { data: summaryData } = await supabase
-        .from('account_summary')
+        .from(summaryTable)
         .select('*')
         .eq('id', 1)
         .single();
 
-      // 2. Fetch trades from Supabase /trades
+      // 2. Fetch trades from Supabase
       const { data: tradesData } = await supabase
-        .from('trades')
+        .from(tradesTable)
         .select('*')
         .order('entry_time', { ascending: false });
 
@@ -507,18 +560,18 @@ export default function Dashboard() {
             win_rate: Number(calculatedWinRate.toFixed(2)),
             net_profit: realizedPnl,
             active_allocations: active,
-            safety_state: realizedPnl <= -2000.0 ? "DAILY_LOSS_HALT" : "SAFE",
+            safety_state: (marketEnv === 'FOREX' ? realizedPnl <= -200.0 : realizedPnl <= -2000.0) ? "DAILY_LOSS_HALT" : "SAFE",
             daily_realized_pnl: Number(summaryData.daily_realized_pnl),
             total_trades: tradesData.length
           });
         } else {
           // Setup metrics directly from trades
           setMetrics({
-            account_capital: 100000.0 + realizedPnl,
+            account_capital: startingCapital + realizedPnl,
             win_rate: Number(calculatedWinRate.toFixed(2)),
             net_profit: realizedPnl,
             active_allocations: active,
-            safety_state: realizedPnl <= -2000.0 ? "DAILY_LOSS_HALT" : "SAFE",
+            safety_state: (marketEnv === 'FOREX' ? realizedPnl <= -200.0 : realizedPnl <= -2000.0) ? "DAILY_LOSS_HALT" : "SAFE",
             daily_realized_pnl: realizedPnl,
             total_trades: tradesData.length
           });
@@ -611,7 +664,7 @@ export default function Dashboard() {
 
   // Check market hours status locally / backend — use ref to avoid stale closure
   const checkMarketState = () => {
-    setMarketState(getMarketStatusForAsset(assetRef.current));
+    setMarketState(getMarketStatusForAsset(assetRef.current, ASSETS));
   };
 
   // Generate simulated candle data if backend is offline
@@ -849,7 +902,7 @@ export default function Dashboard() {
       .channel('trades-realtime-channel')
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'trades' },
+        { event: '*', schema: 'public', table: marketEnv === 'FOREX' ? 'forex_trades' : 'trades' },
         (payload) => {
           console.log('🔔 Real-time Trade Event:', payload);
           loadData();
@@ -861,7 +914,7 @@ export default function Dashboard() {
       .channel('metrics-realtime-channel')
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'account_summary' },
+        { event: '*', schema: 'public', table: marketEnv === 'FOREX' ? 'forex_account_summary' : 'account_summary' },
         (payload) => {
           console.log('🔔 Real-time Account summary Event:', payload);
           loadData();
@@ -880,7 +933,7 @@ export default function Dashboard() {
       supabase.removeChannel(tradesChannel);
       supabase.removeChannel(metricsChannel);
     };
-  }, [mounted]);
+  }, [mounted, marketEnv]);
 
   // Reactive resolution/asset updates
   useEffect(() => {
@@ -961,6 +1014,30 @@ export default function Dashboard() {
         </div>
 
         <div className="flex flex-wrap items-center gap-3 font-mono text-xs">
+          {/* Market Environment Toggle */}
+          <div className="flex items-center gap-1 border border-slate-800 bg-[#070b15] p-1 rounded-xl">
+            <button
+              onClick={() => setMarketEnv('INDIAN')}
+              className={`px-3 py-1 rounded-lg text-[10px] font-bold tracking-wider transition-all cursor-pointer ${
+                marketEnv === 'INDIAN'
+                  ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 shadow-lg shadow-cyan-950/20'
+                  : 'text-slate-500 hover:text-slate-300'
+              }`}
+            >
+              INDIAN
+            </button>
+            <button
+              onClick={() => setMarketEnv('FOREX')}
+              className={`px-3 py-1 rounded-lg text-[10px] font-bold tracking-wider transition-all cursor-pointer ${
+                marketEnv === 'FOREX'
+                  ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 shadow-lg shadow-emerald-950/20'
+                  : 'text-slate-500 hover:text-slate-300'
+              }`}
+            >
+              FOREX
+            </button>
+          </div>
+
           <div className="flex items-center gap-2 border border-slate-800 bg-[#070b15] hover:border-cyan-500/50 px-3 py-1 rounded-xl transition-colors">
             <span className="text-slate-400 font-semibold uppercase tracking-wider text-[10px]">Asset:</span>
             <select
@@ -1017,10 +1094,10 @@ export default function Dashboard() {
         <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
           <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Net Equity</span>
           <span className="text-xl md:text-2xl font-black text-slate-100 font-mono">
-            ₹{(100000.00 + portfolioRealizedPnl).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+            {formatCurrency(startingCapital + portfolioRealizedPnl, marketEnv)}
           </span>
           <div className="text-[10px] text-slate-500 mt-1 font-mono">
-            Base: ₹1,00,000.00
+            Base: {formatCurrency(startingCapital, marketEnv)}
           </div>
         </div>
 
@@ -1032,7 +1109,7 @@ export default function Dashboard() {
           <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Realized P&L</span>
           <span className={`text-xl md:text-2xl font-black font-mono ${portfolioRealizedPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
             {portfolioRealizedPnl >= 0 ? "+" : ""}
-            ₹{portfolioRealizedPnl.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+            {formatCurrency(portfolioRealizedPnl, marketEnv)}
           </span>
           <div className="text-[10px] text-slate-500 mt-1 font-mono">
             All indices combined
@@ -1047,7 +1124,7 @@ export default function Dashboard() {
           <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Unrealized P&L</span>
           <span className={`text-xl md:text-2xl font-black font-mono ${liveUnrealizedPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
             {liveUnrealizedPnl >= 0 ? "+" : ""}
-            ₹{liveUnrealizedPnl.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+            {formatCurrency(liveUnrealizedPnl, marketEnv)}
           </span>
           <div className="text-[10px] text-slate-500 mt-1 font-mono">
             Active position float
@@ -1094,14 +1171,14 @@ export default function Dashboard() {
               </div>
               <div className="text-[10px] text-slate-400 font-mono mt-0.5">
                 Direction: <span className={otherOpenPosition.direction === 'BUY' ? 'text-emerald-400 font-bold' : 'text-rose-400 font-bold'}>{otherOpenPosition.direction}</span> | 
-                Entry: ₹{Number(otherOpenPosition.entry_price).toLocaleString('en-IN', { minimumFractionDigits: 2 })} | 
+                Entry: {formatPrice(Number(otherOpenPosition.entry_price), marketEnv)} | 
                 Qty: {otherOpenPosition.quantity}
               </div>
             </div>
           </div>
           <button
             onClick={() => {
-              const match = ASSETS.find(a => isAssetMatch(a.value, otherOpenPosition.symbol));
+              const match = (marketEnv === 'FOREX' ? FOREX_ASSETS : INDIAN_ASSETS).find(a => isAssetMatch(a.value, otherOpenPosition.symbol));
               if (match) {
                 setSelectedAsset(match.value);
                 setSelectedAssetLabel(match.label);
@@ -1210,14 +1287,14 @@ export default function Dashboard() {
                     <div className="bg-slate-900/50 p-3 rounded-lg border border-slate-850">
                       <span className="text-slate-500 text-[9px] uppercase tracking-wider block mb-1">Avg Win</span>
                       <span className="text-xs font-bold text-emerald-400">
-                        ₹{calculateAvgWinLoss(filteredTrades).avgWin.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                        {formatCurrencyCompact(calculateAvgWinLoss(filteredTrades).avgWin, marketEnv)}
                       </span>
                     </div>
 
                     <div className="bg-slate-900/50 p-3 rounded-lg border border-slate-850">
                       <span className="text-slate-500 text-[9px] uppercase tracking-wider block mb-1">Avg Loss</span>
                       <span className="text-xs font-bold text-rose-400">
-                        ₹{calculateAvgWinLoss(filteredTrades).avgLoss.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                        {formatCurrencyCompact(calculateAvgWinLoss(filteredTrades).avgLoss, marketEnv)}
                       </span>
                     </div>
                   </div>
@@ -1255,19 +1332,19 @@ export default function Dashboard() {
                       <div className="bg-slate-900/30 p-3 rounded-lg border border-slate-850">
                         <span className="text-slate-500 text-[8px] uppercase tracking-wider block mb-1">Weekly Return</span>
                         <span className={`text-sm font-black ${calculatePeriodReturn(filteredTrades, 'weekly') >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                          ₹{calculatePeriodReturn(filteredTrades, 'weekly').toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                          {formatCurrencyCompact(calculatePeriodReturn(filteredTrades, 'weekly'), marketEnv)}
                         </span>
                       </div>
                       <div className="bg-slate-900/30 p-3 rounded-lg border border-slate-850">
                         <span className="text-slate-500 text-[8px] uppercase tracking-wider block mb-1">Monthly Return</span>
                         <span className={`text-sm font-black ${calculatePeriodReturn(filteredTrades, 'monthly') >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                          ₹{calculatePeriodReturn(filteredTrades, 'monthly').toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                          {formatCurrencyCompact(calculatePeriodReturn(filteredTrades, 'monthly'), marketEnv)}
                         </span>
                       </div>
                       <div className="bg-slate-900/30 p-3 rounded-lg border border-slate-850">
                         <span className="text-slate-500 text-[8px] uppercase tracking-wider block mb-1">All-Time Net PnL</span>
                         <span className={`text-sm font-black ${filteredRealizedPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                          ₹{filteredRealizedPnl.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                          {formatCurrencyCompact(filteredRealizedPnl, marketEnv)}
                         </span>
                       </div>
                     </div>
@@ -1291,7 +1368,7 @@ export default function Dashboard() {
                               <td className="py-2 px-1 text-emerald-500 text-center font-bold">{day.wins}</td>
                               <td className="py-2 px-1 text-slate-300 text-center">{day.winRate}%</td>
                               <td className={`py-2 px-1 text-right font-black ${day.pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                ₹{day.pnl >= 0 ? '+' : ''}{day.pnl.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                                {day.pnl >= 0 ? '+' : ''}{formatCurrency(day.pnl, marketEnv)}
                               </td>
                             </tr>
                           ))}
@@ -1342,10 +1419,10 @@ export default function Dashboard() {
                         </span>
                       </td>
                       <td className="py-3 px-2 text-slate-300 font-bold">{openPosition.quantity}</td>
-                      <td className="py-3 px-2 text-slate-300">₹{Number(openPosition.entry_price).toFixed(2)}</td>
-                      <td className="py-3 px-2 text-cyan-400 font-bold animate-pulse">₹{liveSpotPrice.toFixed(2)}</td>
+                      <td className="py-3 px-2 text-slate-300">{formatPrice(Number(openPosition.entry_price), marketEnv)}</td>
+                      <td className="py-3 px-2 text-cyan-400 font-bold animate-pulse">{formatPrice(liveSpotPrice, marketEnv)}</td>
                       <td className={`py-3 px-2 text-right font-black ${liveUnrealizedPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                        ₹{liveUnrealizedPnl >= 0 ? '+' : ''}{liveUnrealizedPnl.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                        {liveUnrealizedPnl >= 0 ? '+' : ''}{formatCurrency(liveUnrealizedPnl, marketEnv)}
                       </td>
                     </tr>
                   </tbody>
@@ -1397,7 +1474,7 @@ export default function Dashboard() {
                       <div className="flex items-center justify-between mb-3">
                         <span className="text-xs font-bold text-slate-200">{t.symbol} {t.direction === 'BUY' ? 'ATM CE' : 'ATM PE'}</span>
                         <span className="text-xs font-bold font-mono text-slate-300">
-                          ₹{Number(t.entry_price).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                          {formatPrice(Number(t.entry_price), marketEnv)}
                         </span>
                       </div>
 
@@ -1422,11 +1499,11 @@ export default function Dashboard() {
                                 <div className="grid grid-cols-2 gap-3 bg-slate-950/60 p-2 rounded-lg border border-slate-850/50">
                                   <div>
                                     <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5">STOP LOSS</span>
-                                    <span className="text-rose-400 font-bold font-mono text-[11px]">₹{slVal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                                    <span className="text-rose-400 font-bold font-mono text-[11px]">{formatPrice(slVal, marketEnv)}</span>
                                   </div>
                                   <div>
                                     <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5 text-right">TAKE PROFIT</span>
-                                    <span className="text-emerald-400 font-bold font-mono text-[11px] block text-right">₹{tpVal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                                    <span className="text-emerald-400 font-bold font-mono text-[11px] block text-right">{formatPrice(tpVal, marketEnv)}</span>
                                   </div>
                                 </div>
                                 <div className="text-center text-[9px] text-slate-500 bg-slate-900/40 py-1 rounded border border-slate-850/30">
@@ -1459,11 +1536,11 @@ export default function Dashboard() {
                               <div className="grid grid-cols-2 gap-3 bg-slate-950/60 p-2 rounded-lg border border-slate-850/50">
                                 <div>
                                   <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5">STOP LOSS</span>
-                                  <span className="text-rose-400 font-bold font-mono text-[11px]">₹{slVal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                                  <span className="text-rose-400 font-bold font-mono text-[11px]">{formatPrice(slVal, marketEnv)}</span>
                                 </div>
                                 <div>
                                   <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5 text-right">TAKE PROFIT</span>
-                                  <span className="text-emerald-400 font-bold font-mono text-[11px] block text-right">₹{tpVal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                                  <span className="text-emerald-400 font-bold font-mono text-[11px] block text-right">{formatPrice(tpVal, marketEnv)}</span>
                                 </div>
                               </div>
 
@@ -1471,7 +1548,7 @@ export default function Dashboard() {
                               <div className="bg-slate-950/50 p-2 rounded-lg border border-slate-850/30">
                                 <div className="flex justify-between text-[8px] text-slate-500 font-mono mb-1">
                                   <span>SL</span>
-                                  <span>ENTRY (₹{entry.toFixed(1)})</span>
+                                  <span>ENTRY ({formatPrice(entry, marketEnv)})</span>
                                   <span>TP</span>
                                 </div>
                                 <div className="relative h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
@@ -1489,9 +1566,9 @@ export default function Dashboard() {
                                   />
                                 </div>
                                 <div className="flex justify-between text-[8px] text-slate-400 font-mono mt-1">
-                                  <span>₹{slVal.toFixed(1)}</span>
-                                  <span className="text-cyan-400 font-bold animate-pulse">LTP: ₹{current.toFixed(1)}</span>
-                                  <span>₹{tpVal.toFixed(1)}</span>
+                                  <span>{formatPrice(slVal, marketEnv)}</span>
+                                  <span className="text-cyan-400 font-bold animate-pulse">LTP: {formatPrice(current, marketEnv)}</span>
+                                  <span>{formatPrice(tpVal, marketEnv)}</span>
                                 </div>
                               </div>
 
@@ -1499,7 +1576,7 @@ export default function Dashboard() {
                               <div className="pt-2 border-t border-slate-850/30 flex items-center justify-between">
                                 <span className="text-slate-500 uppercase tracking-widest text-[8px]">Floating Return</span>
                                 <span className={`text-xs font-black ${currentUnrealized >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
-                                  {currentUnrealized >= 0 ? '+' : ''}₹{currentUnrealized.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                                  {currentUnrealized >= 0 ? '+' : ''}{formatCurrency(currentUnrealized, marketEnv)}
                                 </span>
                               </div>
                             </div>
@@ -1620,7 +1697,7 @@ export default function Dashboard() {
                           <div className="flex items-center justify-between">
                             <span className="text-xs font-bold text-slate-200">{t.symbol} {t.direction === 'BUY' ? 'ATM CE' : 'ATM PE'}</span>
                             <span className="text-xs font-bold font-mono text-slate-300">
-                              ₹{Number(t.entry_price).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                              {formatPrice(Number(t.entry_price), marketEnv)}
                             </span>
                           </div>
 
@@ -1643,11 +1720,11 @@ export default function Dashboard() {
                                   <div className="grid grid-cols-2 gap-3 bg-slate-950/60 p-2 rounded-lg border border-slate-850/50">
                                     <div>
                                       <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5">STOP LOSS TARGET</span>
-                                      <span className="text-rose-400 font-bold font-mono text-[11px]">₹{slVal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                                      <span className="text-rose-400 font-bold font-mono text-[11px]">{formatPrice(slVal, marketEnv)}</span>
                                     </div>
                                     <div>
                                       <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5 text-right">TAKE PROFIT TARGET</span>
-                                      <span className="text-emerald-400 font-bold font-mono text-[11px] block text-right">₹{tpVal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                                      <span className="text-emerald-400 font-bold font-mono text-[11px] block text-right">{formatPrice(tpVal, marketEnv)}</span>
                                     </div>
                                   </div>
                                 );
@@ -1671,7 +1748,7 @@ export default function Dashboard() {
                                 <div>
                                   <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5 text-right">Slip Offset</span>
                                   <span className="text-slate-300 font-bold block text-right mt-0.5">
-                                    {t.slippage ? `₹${Number(t.slippage).toFixed(2)} pts` : '—'}
+                                    {t.slippage ? `${formatPrice(Number(t.slippage), marketEnv)} pts` : '—'}
                                   </span>
                                 </div>
                               </div>
@@ -1679,7 +1756,7 @@ export default function Dashboard() {
                               <div className="pt-2 border-t border-slate-850/30 flex items-center justify-between">
                                 <span className="text-slate-500 uppercase tracking-widest text-[8px]">PnL Outcome</span>
                                 <span className={`text-xs font-black ${closedPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
-                                  {closedPnl >= 0 ? '+' : ''}₹{closedPnl.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                                  {closedPnl >= 0 ? '+' : ''}{formatCurrency(closedPnl, marketEnv)}
                                 </span>
                               </div>
                             </div>
