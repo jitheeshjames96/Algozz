@@ -526,7 +526,7 @@ export default function Dashboard() {
   // Get active open trades
   const activeTrades = trades.filter(t => t.status === 'OPEN');
 
-  // Get filtered closed trades for the Interactive Ledger history
+  // Get filtered closed trades for the Interactive Ledger history (filtered by selected index/asset)
   const ledgerFilteredTrades = (() => {
     const now = new Date();
     
@@ -543,7 +543,7 @@ export default function Dashboard() {
     monthlyStart.setHours(0, 0, 0, 0);
 
     return trades.filter(t => {
-      if (t.status !== 'CLOSED') {
+      if (t.status !== 'CLOSED' || !isAssetMatch(selectedAsset, t.symbol)) {
         return false;
       }
       
@@ -1190,6 +1190,26 @@ export default function Dashboard() {
   const filteredWinRate = filteredClosed.length > 0 ? Number(((filteredWins.length / filteredClosed.length) * 100).toFixed(2)) : 0.0;
   const filteredRealizedPnl = filteredClosed.reduce((acc, curr) => acc + computePnl(curr), 0);
 
+  // Selected Asset stats computations (used for Context-Aware header stats)
+  const assetTrades = trades.filter((t) => isAssetMatch(selectedAsset, t.symbol));
+  const assetOpenTrades = assetTrades.filter((t) => t.status === 'OPEN');
+  const assetClosedTrades = assetTrades.filter((t) => t.status === 'CLOSED');
+
+  const assetUnrealized = assetOpenTrades.reduce((sum, t) => {
+    const entry = Number(t.entry_price);
+    const current = livePrices[t.symbol] || (isAssetMatch(selectedAsset, t.symbol) ? liveSpotPrice : entry);
+    const delta = t.direction === 'BUY' ? current - entry : entry - current;
+    return sum + (delta * Number(t.quantity));
+  }, 0);
+
+  const assetTodayRealized = assetClosedTrades
+    .filter((t) => isExitTimeToday(t.exit_time))
+    .reduce((sum, t) => sum + computePnl(t), 0);
+  const assetTodayPnl = assetTodayRealized + assetUnrealized;
+
+  const assetOverallRealized = assetClosedTrades.reduce((sum, t) => sum + computePnl(t), 0);
+  const assetOverallPnl = assetOverallRealized + assetUnrealized;
+
   if (!mounted) {
     return (
       <div className="flex h-screen w-full items-center justify-center bg-[#02050f] text-cyan-400 font-mono">
@@ -1410,148 +1430,6 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Portfolio & Asset Breakdown compliance section */}
-      <section className="border border-slate-800 bg-[#070b15]/95 rounded-2xl p-5 mb-6 shadow-2xl overflow-hidden relative">
-        <div className="absolute top-0 right-0 w-80 h-16 bg-cyan-500/5 rounded-full blur-3xl -z-10" />
-        <div className="flex items-center justify-between border-b border-slate-800 pb-3 mb-4">
-          <div className="flex items-center gap-2">
-            <span className="inline-block h-3.5 w-3.5 rounded bg-gradient-to-tr from-cyan-500 to-indigo-500 shadow-md shadow-cyan-500/20" />
-            <h2 className="text-xs font-bold font-mono tracking-widest text-slate-300 uppercase">
-              PORTFOLIO BREAKDOWN & SEBI COMPLIANCE
-            </h2>
-          </div>
-          <span className="text-[10px] text-cyan-400 font-mono font-bold tracking-wider px-2 py-0.5 rounded bg-cyan-950/40 border border-cyan-800/40">
-            {marketEnv === 'INDIAN' ? 'SEBI LOT RULES ACTIVE' : 'FX CONTRACT BASES ACTIVE'}
-          </span>
-        </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse font-mono text-[11px]">
-            <thead>
-              <tr className="border-b border-slate-800 text-slate-500 uppercase tracking-widest text-[9px] bg-slate-900/10">
-                <th className="py-2.5 px-3">Asset</th>
-                <th className="py-2.5 px-2 text-center">Standard / SEBI Qty</th>
-                <th className="py-2.5 px-2 text-center">Active Position Qty</th>
-                <th className="py-2.5 px-2 text-center">Last Spot (LTP)</th>
-                <th className="py-2.5 px-2 text-right">Floating Return</th>
-                <th className="py-2.5 px-2 text-right">Today's P&L</th>
-                <th className="py-2.5 px-2 text-right">Overall Account P&L</th>
-                <th className="py-2.5 px-3 text-center">Exposure</th>
-              </tr>
-            </thead>
-            <tbody>
-              {ASSETS.map((asset) => {
-                const assetTrades = trades.filter((t) => isAssetMatch(asset.value, t.symbol));
-                const openTrades = assetTrades.filter((t) => t.status === 'OPEN');
-                const closedTrades = assetTrades.filter((t) => t.status === 'CLOSED');
-
-                // Determine active trade direction & lot size
-                const isActive = openTrades.length > 0;
-                const activeTrade = openTrades[0] || null;
-                const activeQty = isActive ? activeTrade.quantity : 0;
-                const direction = isActive ? activeTrade.direction : null;
-
-                // LTP mapping
-                const ltp = livePrices[asset.value] || (isAssetMatch(selectedAsset, asset.value) ? liveSpotPrice : (isActive ? Number(activeTrade.entry_price) : 0));
-
-                // Floating Unrealized P&L
-                const unrealizedPnl = openTrades.reduce((sum, t) => {
-                  const entry = Number(t.entry_price);
-                  const current = livePrices[t.symbol] || (isAssetMatch(selectedAsset, t.symbol) ? liveSpotPrice : entry);
-                  const delta = t.direction === 'BUY' ? current - entry : entry - current;
-                  return sum + (delta * Number(t.quantity));
-                }, 0);
-
-                // Today's Realized P&L
-                const todayRealizedPnl = closedTrades
-                  .filter((t) => isExitTimeToday(t.exit_time))
-                  .reduce((sum, t) => sum + computePnl(t), 0);
-                const todayTotalPnl = todayRealizedPnl + unrealizedPnl;
-
-                // Overall Realized + Floating P&L
-                const overallRealizedPnl = closedTrades.reduce((sum, t) => sum + computePnl(t), 0);
-                const overallTotalPnl = overallRealizedPnl + unrealizedPnl;
-
-                return (
-                  <tr
-                    key={asset.value}
-                    onClick={() => {
-                      setSelectedAsset(asset.value);
-                      setSelectedAssetLabel(asset.label);
-                    }}
-                    className={`border-b border-slate-850 hover:bg-slate-900/35 transition-colors cursor-pointer ${
-                      isAssetMatch(selectedAsset, asset.value) ? 'bg-cyan-500/[0.02] border-l-2 border-l-cyan-500' : ''
-                    }`}
-                  >
-                    {/* Asset Name */}
-                    <td className="py-3 px-3 font-sans text-xs">
-                      <div className="font-bold text-slate-200">{asset.label}</div>
-                      <div className="text-[10px] text-slate-500 font-mono mt-0.5">{asset.value}</div>
-                    </td>
-
-                    {/* Standard Qty */}
-                    <td className="py-3 px-2 text-center text-slate-400 font-bold">
-                      {getStandardLotSize(asset.value, marketEnv)}
-                    </td>
-
-                    {/* Active Qty */}
-                    <td className="py-3 px-2 text-center font-bold">
-                      {isActive ? (
-                        <span className="text-cyan-400">
-                          {formatActiveQty(activeQty, asset.value, marketEnv)}
-                        </span>
-                      ) : (
-                        <span className="text-slate-600">—</span>
-                      )}
-                    </td>
-
-                    {/* LTP */}
-                    <td className="py-3 px-2 text-center text-slate-300 font-bold">
-                      {ltp > 0 ? formatPrice(ltp, marketEnv) : '—'}
-                    </td>
-
-                    {/* Unrealized P&L */}
-                    <td className={`py-3 px-2 text-right font-bold ${unrealizedPnl > 0.001 ? 'text-emerald-400' : unrealizedPnl < -0.001 ? 'text-rose-400' : 'text-slate-500'}`}>
-                      {unrealizedPnl > 0.001 ? '+' : ''}
-                      {formatCurrency(unrealizedPnl, marketEnv)}
-                    </td>
-
-                    {/* Today's P&L */}
-                    <td className={`py-3 px-2 text-right font-black ${todayTotalPnl > 0.001 ? 'text-emerald-400' : todayTotalPnl < -0.001 ? 'text-rose-400' : 'text-slate-500'}`}>
-                      {todayTotalPnl > 0.001 ? '+' : ''}
-                      {formatCurrency(todayTotalPnl, marketEnv)}
-                    </td>
-
-                    {/* Overall P&L */}
-                    <td className={`py-3 px-2 text-right font-black ${overallTotalPnl > 0.001 ? 'text-emerald-400' : overallTotalPnl < -0.001 ? 'text-rose-400' : 'text-slate-500'}`}>
-                      {overallTotalPnl > 0.001 ? '+' : ''}
-                      {formatCurrency(overallTotalPnl, marketEnv)}
-                    </td>
-
-                    {/* Exposure Badge */}
-                    <td className="py-3 px-3 text-center">
-                      {isActive ? (
-                        <span className={`inline-block px-2 py-0.5 rounded text-[8px] font-bold border tracking-wider uppercase ${
-                          direction === 'BUY'
-                            ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/35'
-                            : 'bg-rose-500/10 text-rose-400 border-rose-500/35'
-                        }`}>
-                          {direction === 'BUY' ? 'LONG' : 'SHORT'}
-                        </span>
-                      ) : (
-                        <span className="inline-block px-2 py-0.5 rounded text-[8px] font-bold border border-slate-800 text-slate-500 tracking-wider">
-                          FLAT
-                        </span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </section>
-
       {/* 3. Split Screen Brokerage Layout */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         
@@ -1607,6 +1485,23 @@ export default function Dashboard() {
                 </div>
               )}
             </div>
+
+            {/* Selected Asset Stats Info Bar (SEBI Compliant Info) */}
+            {activeChartTab === 'PRICE' && (
+              <div className="flex flex-wrap items-center justify-between gap-4 bg-slate-950/40 p-3 rounded-xl border border-slate-850/60 mb-4 font-mono text-[10px] text-slate-400 animate-fadeIn">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-slate-500 uppercase tracking-wider">Asset Focus:</span>
+                  <span className="text-cyan-400 font-bold">{selectedAssetLabel} ({selectedAsset})</span>
+                </div>
+                <div className="flex flex-wrap items-center gap-3">
+                  <span className="text-slate-500">STD LOT / SEBI SIZE: <span className="text-slate-200 font-bold">{getStandardLotSize(selectedAsset, marketEnv)}</span></span>
+                  <span className="text-slate-800">|</span>
+                  <span className="text-slate-500">TODAY P&L: <span className={`${assetTodayPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'} font-bold`}>{assetTodayPnl >= 0 ? '+' : ''}{formatCurrency(assetTodayPnl, marketEnv)}</span></span>
+                  <span className="text-slate-800">|</span>
+                  <span className="text-slate-500">OVERALL P&L: <span className={`${assetOverallPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'} font-bold`}>{assetOverallPnl >= 0 ? '+' : ''}{formatCurrency(assetOverallPnl, marketEnv)}</span></span>
+                </div>
+              </div>
+            )}
 
             {/* Price Candlestick Chart */}
             <div className={activeChartTab === 'PRICE' ? 'block' : 'hidden'}>
@@ -1748,7 +1643,7 @@ export default function Dashboard() {
               </div>
             </div>
 
-            {!openPosition ? (
+            {activeTrades.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-10 border border-dashed border-slate-850 rounded-xl bg-slate-900/10">
                 <div className="h-8 w-8 rounded-full border border-slate-700/60 flex items-center justify-center text-slate-500 mb-2">✓</div>
                 <p className="text-[11px] text-slate-500 font-mono tracking-wider">
@@ -1769,20 +1664,44 @@ export default function Dashboard() {
                     </tr>
                   </thead>
                   <tbody>
-                    <tr className="border-b border-slate-850 hover:bg-slate-900/30">
-                      <td className="py-3 px-2 font-bold text-slate-200">{openPosition.symbol} {marketEnv === 'FOREX' ? (openPosition.direction === 'BUY' ? 'LONG' : 'SHORT') : (openPosition.direction === 'BUY' ? 'ATM CE' : 'ATM PE')}</td>
-                      <td className="py-3 px-2">
-                        <span className={`px-1.5 py-0.5 rounded font-bold text-[9px] ${openPosition.direction === 'BUY' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'}`}>
-                          {openPosition.direction}
-                        </span>
-                      </td>
-                      <td className="py-3 px-2 text-slate-300 font-bold">{formatActiveQty(openPosition.quantity, openPosition.symbol, marketEnv)}</td>
-                      <td className="py-3 px-2 text-slate-300">{formatPrice(Number(openPosition.entry_price), marketEnv)}</td>
-                      <td className="py-3 px-2 text-cyan-400 font-bold animate-pulse">{formatPrice(liveSpotPrice, marketEnv)}</td>
-                      <td className={`py-3 px-2 text-right font-black ${liveUnrealizedPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                        {liveUnrealizedPnl >= 0 ? '+' : ''}{formatCurrency(liveUnrealizedPnl, marketEnv)}
-                      </td>
-                    </tr>
+                    {activeTrades.map((op) => {
+                      const entry = Number(op.entry_price);
+                      const current = livePrices[op.symbol] || (isAssetMatch(selectedAsset, op.symbol) ? liveSpotPrice : entry);
+                      const isBuy = op.direction === 'BUY';
+                      const opUnrealized = isBuy ? (current - entry) * op.quantity : (entry - current) * op.quantity;
+                      
+                      // Find matched asset label if any
+                      const matchedAsset = (marketEnv === 'FOREX' ? FOREX_ASSETS : INDIAN_ASSETS).find(a => isAssetMatch(a.value, op.symbol));
+                      const label = matchedAsset ? matchedAsset.label : op.symbol;
+                      
+                      return (
+                        <tr 
+                          key={op.id}
+                          onClick={() => {
+                            setSelectedAsset(matchedAsset ? matchedAsset.value : op.symbol);
+                            setSelectedAssetLabel(label);
+                          }}
+                          className={`border-b border-slate-850 hover:bg-slate-900/30 cursor-pointer transition-colors ${
+                            isAssetMatch(selectedAsset, op.symbol) ? 'bg-cyan-500/[0.02] border-l-2 border-l-cyan-500' : ''
+                          }`}
+                        >
+                          <td className="py-3 px-2 font-bold text-slate-200">
+                            {label}
+                          </td>
+                          <td className="py-3 px-2">
+                            <span className={`px-1.5 py-0.5 rounded font-bold text-[9px] ${isBuy ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'}`}>
+                              {op.direction}
+                            </span>
+                          </td>
+                          <td className="py-3 px-2 text-slate-300 font-bold">{formatActiveQty(op.quantity, op.symbol, marketEnv)}</td>
+                          <td className="py-3 px-2 text-slate-300">{formatPrice(entry, marketEnv)}</td>
+                          <td className="py-3 px-2 text-cyan-400 font-bold animate-pulse">{formatPrice(current, marketEnv)}</td>
+                          <td className={`py-3 px-2 text-right font-black ${opUnrealized >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                            {opUnrealized >= 0 ? '+' : ''}{formatCurrency(opUnrealized, marketEnv)}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
