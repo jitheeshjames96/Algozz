@@ -488,25 +488,6 @@ const calculateDailyBreakdown = (tradesList: Trade[]) => {
 export default function Dashboard() {
   const [mounted, setMounted] = useState(false);
   const [marketEnv, setMarketEnv] = useState<'INDIAN' | 'FOREX'>('INDIAN');
-  const ASSETS = marketEnv === 'FOREX' ? FOREX_ASSETS : INDIAN_ASSETS;
-  const startingCapital = marketEnv === 'FOREX' ? 10000.00 : 100000.00;
-
-  // Auto-switch default asset on environment change
-  useEffect(() => {
-    if (marketEnv === 'FOREX') {
-      setSelectedAsset('EURUSD=X');
-      setSelectedAssetLabel('EUR / USD');
-      setResolution('5m');
-    } else {
-      setSelectedAsset('^NSEI');
-      setSelectedAssetLabel('NIFTY 50');
-      setResolution('15m');
-    }
-  }, [marketEnv]);
-  const chartContainerRef = useRef<HTMLDivElement>(null);
-  const equityChartContainerRef = useRef<HTMLDivElement>(null);
-  
-  // State variables
   const [metrics, setMetrics] = useState<AccountMetrics>({
     account_capital: 100000.0,
     win_rate: 0.0,
@@ -522,6 +503,37 @@ export default function Dashboard() {
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [activeChartTab, setActiveChartTab] = useState<'PRICE' | 'EQUITY' | 'PERFORMANCE'>('PRICE');
   const [expandedTradeId, setExpandedTradeId] = useState<string | null>(null);
+
+  const [isLive, setIsLive] = useState(false);
+  const [marketState, setMarketState] = useState<'OPEN' | 'CLOSED'>('CLOSED');
+  const [copiedHash, setCopiedHash] = useState<string | null>(null);
+  const [currentTimeStr, setCurrentTimeStr] = useState<string>("");
+  const [liveSpotPrice, setLiveSpotPrice] = useState<number>(22660.00);
+  const [livePrices, setLivePrices] = useState<Record<string, number>>({});
+  const [resolution, setResolution] = useState<string>('15m');
+  const [selectedAsset, setSelectedAsset] = useState<string>('^NSEI');
+  const [selectedAssetLabel, setSelectedAssetLabel] = useState<string>('NIFTY 50');
+
+  const chartContainerRef = useRef<HTMLDivElement>(null);
+  const equityChartContainerRef = useRef<HTMLDivElement>(null);
+  const resolutionRef = useRef('15m');
+  const assetRef = useRef('^NSEI');
+
+  const ASSETS = marketEnv === 'FOREX' ? FOREX_ASSETS : INDIAN_ASSETS;
+  const startingCapital = marketEnv === 'FOREX' ? 10000.00 : 100000.00;
+
+  // Auto-switch default asset on environment change
+  useEffect(() => {
+    if (marketEnv === 'FOREX') {
+      setSelectedAsset('EURUSD=X');
+      setSelectedAssetLabel('EUR / USD');
+      setResolution('5m');
+    } else {
+      setSelectedAsset('^NSEI');
+      setSelectedAssetLabel('NIFTY 50');
+      setResolution('15m');
+    }
+  }, [marketEnv]);
 
   // Get active open trades
   const activeTrades = trades.filter(t => t.status === 'OPEN');
@@ -558,17 +570,6 @@ export default function Dashboard() {
       return true; // 'ALL'
     });
   })();
-  const [isLive, setIsLive] = useState(false);
-  const [marketState, setMarketState] = useState<'OPEN' | 'CLOSED'>('CLOSED');
-  const [copiedHash, setCopiedHash] = useState<string | null>(null);
-  const [currentTimeStr, setCurrentTimeStr] = useState<string>("");
-  const [liveSpotPrice, setLiveSpotPrice] = useState<number>(22660.00);
-  const [livePrices, setLivePrices] = useState<Record<string, number>>({});
-  const [resolution, setResolution] = useState<string>('15m');
-  const [selectedAsset, setSelectedAsset] = useState<string>('^NSEI');
-  const [selectedAssetLabel, setSelectedAssetLabel] = useState<string>('NIFTY 50');
-  const resolutionRef = useRef('15m');
-  const assetRef = useRef('^NSEI');
 
   useEffect(() => {
     resolutionRef.current = resolution;
@@ -651,8 +652,9 @@ export default function Dashboard() {
         const newLivePrices: Record<string, number> = {};
         if (activeSymbols.length > 0) {
           try {
+            const logsTable = marketEnv === 'FOREX' ? 'forex_execution_logs' : 'execution_logs';
             const { data: logsData } = await supabase
-              .from('execution_logs')
+              .from(logsTable)
               .select('contract_targeted, asset_price, timestamp')
               .in('contract_targeted', activeSymbols)
               .order('timestamp', { ascending: false });
@@ -666,7 +668,7 @@ export default function Dashboard() {
               });
             }
           } catch (logErr) {
-            console.error("Error fetching live prices from execution_logs:", logErr);
+            console.error("Error fetching live prices from execution logs:", logErr);
           }
         }
         setLivePrices(prev => ({ ...prev, ...newLivePrices }));
