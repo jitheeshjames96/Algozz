@@ -72,6 +72,60 @@ const formatPrice = (val: number, env: 'INDIAN' | 'FOREX') => {
   return formatCurrency(val, env, decimals);
 };
 
+const isExitTimeToday = (exitTimeStr: string | null): boolean => {
+  if (!exitTimeStr) return false;
+  try {
+    const exitDate = new Date(exitTimeStr);
+    const today = new Date();
+    return exitDate.getDate() === today.getDate() &&
+           exitDate.getMonth() === today.getMonth() &&
+           exitDate.getFullYear() === today.getFullYear();
+  } catch (e) {
+    return false;
+  }
+};
+
+const getStandardLotSize = (assetVal: string, env: 'INDIAN' | 'FOREX'): string => {
+  if (env === 'INDIAN') {
+    if (assetVal === '^NSEI') return '65 (NIFTY 50)';
+    if (assetVal === '^NSEBANK') return '30 (BANK NIFTY)';
+    if (assetVal === '^BSESN') return '20 (SENSEX)';
+    if (assetVal.includes('RELIANCE')) return '250';
+    if (assetVal.includes('TCS')) return '175';
+    if (assetVal.includes('HDFCBANK')) return '550';
+    if (assetVal.includes('INFY')) return '400';
+    return '25 (Default)';
+  } else {
+    if (['EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'AUDUSD=X', 'USDCAD=X'].includes(assetVal)) {
+      return '100,000 Units (1.0 Lot)';
+    }
+    if (assetVal === 'GC=F') return '100 oz (1 Contract)';
+    if (assetVal === 'BTC-USD') return '1 BTC';
+    return 'Dynamic (1% Risk)';
+  }
+};
+
+const formatActiveQty = (qty: number, symbol: string, env: 'INDIAN' | 'FOREX'): string => {
+  if (env === 'INDIAN') {
+    return `${qty.toLocaleString('en-IN')} Units`;
+  }
+  
+  // Forex / Crypto / Commodities formatting
+  const upperSymbol = symbol.toUpperCase();
+  if (upperSymbol === 'GC=F' || upperSymbol.includes('GOLD')) {
+    const contracts = qty / 100;
+    return `${qty.toLocaleString('en-US')} oz (${contracts.toFixed(2)} Lots)`;
+  }
+  if (upperSymbol === 'BTC-USD' || upperSymbol.includes('BTC')) {
+    return `${qty.toFixed(3)} BTC`;
+  }
+  if (['EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'AUDUSD=X', 'USDCAD=X'].some(s => upperSymbol.includes(s.replace('=X', ''))) || upperSymbol.endsWith('=X')) {
+    const lots = qty / 100000;
+    return `${qty.toLocaleString('en-US')} Units (${lots.toFixed(2)} Lots)`;
+  }
+  return `${qty.toLocaleString('en-US')} Units`;
+};
+
 interface AccountMetrics {
   account_capital: number;
   win_rate: number;
@@ -283,15 +337,50 @@ const isAssetMatch = (assetVal: string, symbol: string) => {
   return clean(assetVal) === clean(symbol) || assetVal === symbol;
 };
 
+// NSE Trading Holidays 2026 (format: 'YYYY-MM-DD')
+const NSE_HOLIDAYS_2026 = new Set([
+  '2026-01-26', // Republic Day
+  '2026-02-26', // Maha Shivratri
+  '2026-03-20', // Holi
+  '2026-04-02', // Ram Navami
+  '2026-04-14', // Dr. Ambedkar Jayanti / Mahavir Jayanti
+  '2026-04-03', // Good Friday
+  '2026-05-01', // Maharashtra Day
+  '2026-05-28', // Buddha Purnima ← TODAY
+  '2026-06-17', // Eid al-Adha (Bakri Eid)
+  '2026-08-15', // Independence Day
+  '2026-09-04', // Ganesh Chaturthi
+  '2026-10-02', // Gandhi Jayanti / Dussehra
+  '2026-10-22', // Diwali - Laxmi Puja
+  '2026-10-23', // Diwali - Balipratipada
+  '2026-11-05', // Guru Nanak Jayanti
+  '2026-12-25', // Christmas
+]);
+
+const isNSEHoliday = (): boolean => {
+  const now = new Date();
+  const istTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+  const yyyy = istTime.getFullYear();
+  const mm   = String(istTime.getMonth() + 1).padStart(2, '0');
+  const dd   = String(istTime.getDate()).padStart(2, '0');
+  return NSE_HOLIDAYS_2026.has(`${yyyy}-${mm}-${dd}`);
+};
+
 const getMarketStatusForAsset = (assetVal: string, assetsList: typeof INDIAN_ASSETS): 'OPEN' | 'CLOSED' => {
   const now = new Date();
   const asset = assetsList.find(a => a.value === assetVal);
   const category = asset ? asset.category : '';
   
   if (category === 'Crypto') {
-    return 'OPEN';
+    return 'OPEN'; // Crypto never closes
   }
   if (category === 'Commodities') {
+    // Gold futures follow similar hours to Forex (nearly 24/5)
+    const day = now.getUTCDay();
+    const hour = now.getUTCHours();
+    if (day === 6) return 'CLOSED';
+    if (day === 5 && hour >= 22) return 'CLOSED';
+    if (day === 0 && hour < 22) return 'CLOSED';
     return 'OPEN';
   }
   if (category === 'Forex') {
@@ -308,27 +397,30 @@ const getMarketStatusForAsset = (assetVal: string, assetsList: typeof INDIAN_ASS
       const day = cetTime.getDay();
       const hour = cetTime.getHours();
       const minute = cetTime.getMinutes();
-      if (day === 0 || day === 6) return 'CLOSED'; // Weekend
+      if (day === 0 || day === 6) return 'CLOSED';
       const totalMinutes = hour * 60 + minute;
-      return (totalMinutes >= 9 * 60 && totalMinutes <= 17 * 60 + 30) ? 'OPEN' : 'CLOSED'; // 09:00 to 17:30 CET
+      return (totalMinutes >= 9 * 60 && totalMinutes <= 17 * 60 + 30) ? 'OPEN' : 'CLOSED';
     } else {
       const estTime = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
       const day = estTime.getDay();
       const hour = estTime.getHours();
       const minute = estTime.getMinutes();
-      if (day === 0 || day === 6) return 'CLOSED'; // Weekend
+      if (day === 0 || day === 6) return 'CLOSED';
       const totalMinutes = hour * 60 + minute;
-      return (totalMinutes >= 9 * 60 + 30 && totalMinutes <= 16 * 60) ? 'OPEN' : 'CLOSED'; // 09:30 to 16:00 EST
+      return (totalMinutes >= 9 * 60 + 30 && totalMinutes <= 16 * 60) ? 'OPEN' : 'CLOSED';
     }
   }
-  // Default: Indian Indices or Option Stocks (Asia/Kolkata timezone)
+  // ── Indian Indices & Stocks (Asia/Kolkata) ───────────────────────────────────
+  // Check NSE exchange holidays first
+  if (isNSEHoliday()) return 'CLOSED';
+
   const istTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
   const day = istTime.getDay();
   const hour = istTime.getHours();
   const minute = istTime.getMinutes();
   if (day === 0 || day === 6) return 'CLOSED'; // Weekend
   const totalMinutes = hour * 60 + minute;
-  return (totalMinutes >= 9 * 60 + 15 && totalMinutes <= 15 * 60 + 30) ? 'OPEN' : 'CLOSED'; // 09:15 to 15:30 IST
+  return (totalMinutes >= 9 * 60 + 15 && totalMinutes <= 15 * 60 + 30) ? 'OPEN' : 'CLOSED'; // 09:15–15:30 IST
 };
 
 const calculateProfitFactor = (tradesList: Trade[]) => {
@@ -471,6 +563,7 @@ export default function Dashboard() {
   const [copiedHash, setCopiedHash] = useState<string | null>(null);
   const [currentTimeStr, setCurrentTimeStr] = useState<string>("");
   const [liveSpotPrice, setLiveSpotPrice] = useState<number>(22660.00);
+  const [livePrices, setLivePrices] = useState<Record<string, number>>({});
   const [resolution, setResolution] = useState<string>('15m');
   const [selectedAsset, setSelectedAsset] = useState<string>('^NSEI');
   const [selectedAssetLabel, setSelectedAssetLabel] = useState<string>('NIFTY 50');
@@ -552,6 +645,31 @@ export default function Dashboard() {
 
       if (tradesData) {
         setTrades(tradesData);
+
+        // Fetch live prices for active symbols
+        const activeSymbols = Array.from(new Set(tradesData.filter(t => t.status === 'OPEN').map(t => t.symbol)));
+        const newLivePrices: Record<string, number> = {};
+        if (activeSymbols.length > 0) {
+          try {
+            const { data: logsData } = await supabase
+              .from('execution_logs')
+              .select('contract_targeted, asset_price, timestamp')
+              .in('contract_targeted', activeSymbols)
+              .order('timestamp', { ascending: false });
+
+            if (logsData) {
+              logsData.forEach(log => {
+                const sym = log.contract_targeted;
+                if (sym && newLivePrices[sym] === undefined) {
+                  newLivePrices[sym] = Number(log.asset_price);
+                }
+              });
+            }
+          } catch (logErr) {
+            console.error("Error fetching live prices from execution_logs:", logErr);
+          }
+        }
+        setLivePrices(prev => ({ ...prev, ...newLivePrices }));
         
         // Calculate Win Rate using direction-aware P&L
         const closed = tradesData.filter(t => t.status === 'CLOSED');
@@ -658,7 +776,9 @@ export default function Dashboard() {
         
         // Update live spot price from latest candle close
         if (candles.length > 0) {
-          setLiveSpotPrice(Number(candles[candles.length - 1].close));
+          const ltp = Number(candles[candles.length - 1].close);
+          setLiveSpotPrice(ltp);
+          setLivePrices(prev => ({ ...prev, [assetVal]: ltp }));
         }
       }
     } catch (e) {
@@ -687,6 +807,9 @@ export default function Dashboard() {
     else if (assetVal === 'GC=F') basePrice = 2350.0;
     else if (assetVal.includes('EURUSD')) basePrice = 1.0850;
     else if (assetVal.includes('GBPUSD')) basePrice = 1.2720;
+    else if (assetVal.includes('USDJPY')) basePrice = 157.50;
+    else if (assetVal.includes('AUDUSD')) basePrice = 0.6550;
+    else if (assetVal.includes('USDCAD')) basePrice = 1.3620;
     else if (assetVal === '^GSPC') basePrice = 5300.0;
     else if (assetVal === '^DJI') basePrice = 39000.0;
     else if (assetVal === '^IXIC') basePrice = 16800.0;
@@ -698,6 +821,7 @@ export default function Dashboard() {
     else if (assetVal === 'TCS.NS') basePrice = 3850.0;
     else if (assetVal === 'HDFCBANK.NS') basePrice = 1520.0;
     else if (assetVal === 'INFY.NS') basePrice = 1450.0;
+
     
     let secondsPerCandle = 15 * 60;
     if (resVal === '1m') secondsPerCandle = 60;
@@ -712,22 +836,28 @@ export default function Dashboard() {
     let time = Math.floor(Date.now() / 1000) - 150 * secondsPerCandle;
 
     for (let i = 0; i < 150; i++) {
+      // Use percentage-based volatility so Forex (1.08) and BTC (68000) look correct
+      const volatility = basePrice * 0.0015; // 0.15% range per candle
       const open = basePrice;
-      const high = open + Math.random() * 8 + 2;
-      const low = open - Math.random() * 8 - 2;
-      const close = low + Math.random() * (high - low);
+      const move = (Math.random() - 0.5) * volatility * 2;
+      const close = open + move;
+      const high = Math.max(open, close) + Math.random() * volatility * 0.5;
+      const low  = Math.min(open, close) - Math.random() * volatility * 0.5;
+
       
       mockCandles.push({ time: time as any, open, high, low, close });
       
       // Seed EMA
-      const ema = basePrice * 0.999 + (i * 0.05);
+      const ema = basePrice * (0.999 + (i * 0.00003));
       mockEma.push({ time: time as any, value: ema });
       
-      // FVG
+      // FVG zones (proportional to price)
       if (i % 25 === 0) {
         const isBuy = (i / 25) % 2 === 0;
-        mockFvgTop.push({ time: time as any, value: high + (isBuy ? 4 : -2) });
-        mockFvgBottom.push({ time: time as any, value: low + (isBuy ? -2 : 4) });
+        const fvgOffset = basePrice * 0.002;
+        mockFvgTop.push({ time: time as any, value: high + (isBuy ? fvgOffset : -fvgOffset * 0.5) });
+        mockFvgBottom.push({ time: time as any, value: low + (isBuy ? -fvgOffset * 0.5 : fvgOffset) });
+
         mockMarkers.push({
           time: time as any,
           position: isBuy ? 'belowBar' as const : 'aboveBar' as const,
@@ -1026,12 +1156,24 @@ export default function Dashboard() {
   // Any other open position on a different asset
   const otherOpenPosition = trades.find(t => t.status === 'OPEN' && !isAssetMatch(selectedAsset, t.symbol)) ?? null;
   
-  // Calculate live unrealized pnl
+  // Calculate portfolio-wide live unrealized pnl (all open positions combined)
+  const portfolioUnrealizedPnl = trades
+    .filter(t => t.status === 'OPEN')
+    .reduce((acc, t) => {
+      const livePrice = livePrices[t.symbol] || Number(t.entry_price);
+      const delta = t.direction === 'BUY'
+        ? livePrice - Number(t.entry_price)
+        : Number(t.entry_price) - livePrice;
+      return acc + (delta * Number(t.quantity));
+    }, 0);
+
+  // Calculate live unrealized pnl for selected asset only
   let liveUnrealizedPnl = 0.00;
   if (openPosition) {
+    const livePrice = livePrices[openPosition.symbol] || liveSpotPrice;
     const delta = openPosition.direction === 'BUY' 
-      ? liveSpotPrice - Number(openPosition.entry_price)
-      : Number(openPosition.entry_price) - liveSpotPrice;
+      ? livePrice - Number(openPosition.entry_price)
+      : Number(openPosition.entry_price) - livePrice;
     liveUnrealizedPnl = delta * openPosition.quantity;
   }
 
@@ -1154,30 +1296,39 @@ export default function Dashboard() {
       </header>
 
       {/* 2. Top-Line Metrics Grid */}
-      <section className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
+      <section className="grid grid-cols-2 lg:grid-cols-6 gap-4 mb-6">
         {/* Net Equity */}
         <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
           <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Net Equity</span>
           <span className="text-xl md:text-2xl font-black text-slate-100 font-mono">
-            {formatCurrency(startingCapital + portfolioRealizedPnl, marketEnv)}
+            {formatCurrency(startingCapital + portfolioRealizedPnl + portfolioUnrealizedPnl, marketEnv)}
           </span>
           <div className="text-[10px] text-slate-500 mt-1 font-mono">
             Base: {formatCurrency(startingCapital, marketEnv)}
           </div>
         </div>
 
-        {/* Realized P&L — portfolio total */}
+        {/* Overall Account P&L */}
         <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
-          <div className="absolute top-3 right-3">
-            <span className="text-[9px] font-bold font-mono px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">BOOKED</span>
-          </div>
-          <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Realized P&L</span>
-          <span className={`text-xl md:text-2xl font-black font-mono ${portfolioRealizedPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
-            {portfolioRealizedPnl >= 0 ? "+" : ""}
-            {formatCurrency(portfolioRealizedPnl, marketEnv)}
+          <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Overall P&L</span>
+          <span className={`text-xl md:text-2xl font-black font-mono ${portfolioRealizedPnl + portfolioUnrealizedPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+            {portfolioRealizedPnl + portfolioUnrealizedPnl >= 0 ? "+" : ""}
+            {formatCurrency(portfolioRealizedPnl + portfolioUnrealizedPnl, marketEnv)}
           </span>
           <div className="text-[10px] text-slate-500 mt-1 font-mono">
-            All indices combined
+            Realized + Float PnL
+          </div>
+        </div>
+
+        {/* Today's Realized P&L */}
+        <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
+          <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Today's P&L</span>
+          <span className={`text-xl md:text-2xl font-black font-mono ${Number(metrics.daily_realized_pnl) + portfolioUnrealizedPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+            {Number(metrics.daily_realized_pnl) + portfolioUnrealizedPnl >= 0 ? "+" : ""}
+            {formatCurrency(Number(metrics.daily_realized_pnl) + portfolioUnrealizedPnl, marketEnv)}
+          </span>
+          <div className="text-[10px] text-slate-500 mt-1 font-mono">
+            Today's Net Return
           </div>
         </div>
 
@@ -1187,9 +1338,9 @@ export default function Dashboard() {
             <span className="text-[9px] font-bold font-mono px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/25 animate-pulse">LIVE</span>
           </div>
           <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Unrealized P&L</span>
-          <span className={`text-xl md:text-2xl font-black font-mono ${liveUnrealizedPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
-            {liveUnrealizedPnl >= 0 ? "+" : ""}
-            {formatCurrency(liveUnrealizedPnl, marketEnv)}
+          <span className={`text-xl md:text-2xl font-black font-mono ${portfolioUnrealizedPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+            {portfolioUnrealizedPnl >= 0 ? "+" : ""}
+            {formatCurrency(portfolioUnrealizedPnl, marketEnv)}
           </span>
           <div className="text-[10px] text-slate-500 mt-1 font-mono">
             Active position float
@@ -1209,13 +1360,13 @@ export default function Dashboard() {
         </div>
 
         {/* Market Exposure */}
-        <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl col-span-2 lg:col-span-1">
+        <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
           <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Market Exposure</span>
           <span className="text-xl md:text-2xl font-black text-slate-100 font-mono">
-            {openPosition ? openPosition.quantity : 0}
+            {activeTrades.length}
           </span>
           <div className="text-[10px] mt-1 font-mono flex items-center justify-between">
-            <span className="text-slate-500">Contracts</span>
+            <span className="text-slate-500">Active Trades</span>
             <span className={metrics.safety_state === 'SAFE' ? 'text-emerald-400 font-semibold' : 'text-rose-400 font-black animate-pulse'}>
               {metrics.safety_state}
             </span>
@@ -1258,6 +1409,148 @@ export default function Dashboard() {
           </button>
         </div>
       )}
+
+      {/* Portfolio & Asset Breakdown compliance section */}
+      <section className="border border-slate-800 bg-[#070b15]/95 rounded-2xl p-5 mb-6 shadow-2xl overflow-hidden relative">
+        <div className="absolute top-0 right-0 w-80 h-16 bg-cyan-500/5 rounded-full blur-3xl -z-10" />
+        <div className="flex items-center justify-between border-b border-slate-800 pb-3 mb-4">
+          <div className="flex items-center gap-2">
+            <span className="inline-block h-3.5 w-3.5 rounded bg-gradient-to-tr from-cyan-500 to-indigo-500 shadow-md shadow-cyan-500/20" />
+            <h2 className="text-xs font-bold font-mono tracking-widest text-slate-300 uppercase">
+              PORTFOLIO BREAKDOWN & SEBI COMPLIANCE
+            </h2>
+          </div>
+          <span className="text-[10px] text-cyan-400 font-mono font-bold tracking-wider px-2 py-0.5 rounded bg-cyan-950/40 border border-cyan-800/40">
+            {marketEnv === 'INDIAN' ? 'SEBI LOT RULES ACTIVE' : 'FX CONTRACT BASES ACTIVE'}
+          </span>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse font-mono text-[11px]">
+            <thead>
+              <tr className="border-b border-slate-800 text-slate-500 uppercase tracking-widest text-[9px] bg-slate-900/10">
+                <th className="py-2.5 px-3">Asset</th>
+                <th className="py-2.5 px-2 text-center">Standard / SEBI Qty</th>
+                <th className="py-2.5 px-2 text-center">Active Position Qty</th>
+                <th className="py-2.5 px-2 text-center">Last Spot (LTP)</th>
+                <th className="py-2.5 px-2 text-right">Floating Return</th>
+                <th className="py-2.5 px-2 text-right">Today's P&L</th>
+                <th className="py-2.5 px-2 text-right">Overall Account P&L</th>
+                <th className="py-2.5 px-3 text-center">Exposure</th>
+              </tr>
+            </thead>
+            <tbody>
+              {ASSETS.map((asset) => {
+                const assetTrades = trades.filter((t) => isAssetMatch(asset.value, t.symbol));
+                const openTrades = assetTrades.filter((t) => t.status === 'OPEN');
+                const closedTrades = assetTrades.filter((t) => t.status === 'CLOSED');
+
+                // Determine active trade direction & lot size
+                const isActive = openTrades.length > 0;
+                const activeTrade = openTrades[0] || null;
+                const activeQty = isActive ? activeTrade.quantity : 0;
+                const direction = isActive ? activeTrade.direction : null;
+
+                // LTP mapping
+                const ltp = livePrices[asset.value] || (isAssetMatch(selectedAsset, asset.value) ? liveSpotPrice : (isActive ? Number(activeTrade.entry_price) : 0));
+
+                // Floating Unrealized P&L
+                const unrealizedPnl = openTrades.reduce((sum, t) => {
+                  const entry = Number(t.entry_price);
+                  const current = livePrices[t.symbol] || (isAssetMatch(selectedAsset, t.symbol) ? liveSpotPrice : entry);
+                  const delta = t.direction === 'BUY' ? current - entry : entry - current;
+                  return sum + (delta * Number(t.quantity));
+                }, 0);
+
+                // Today's Realized P&L
+                const todayRealizedPnl = closedTrades
+                  .filter((t) => isExitTimeToday(t.exit_time))
+                  .reduce((sum, t) => sum + computePnl(t), 0);
+                const todayTotalPnl = todayRealizedPnl + unrealizedPnl;
+
+                // Overall Realized + Floating P&L
+                const overallRealizedPnl = closedTrades.reduce((sum, t) => sum + computePnl(t), 0);
+                const overallTotalPnl = overallRealizedPnl + unrealizedPnl;
+
+                return (
+                  <tr
+                    key={asset.value}
+                    onClick={() => {
+                      setSelectedAsset(asset.value);
+                      setSelectedAssetLabel(asset.label);
+                    }}
+                    className={`border-b border-slate-850 hover:bg-slate-900/35 transition-colors cursor-pointer ${
+                      isAssetMatch(selectedAsset, asset.value) ? 'bg-cyan-500/[0.02] border-l-2 border-l-cyan-500' : ''
+                    }`}
+                  >
+                    {/* Asset Name */}
+                    <td className="py-3 px-3 font-sans text-xs">
+                      <div className="font-bold text-slate-200">{asset.label}</div>
+                      <div className="text-[10px] text-slate-500 font-mono mt-0.5">{asset.value}</div>
+                    </td>
+
+                    {/* Standard Qty */}
+                    <td className="py-3 px-2 text-center text-slate-400 font-bold">
+                      {getStandardLotSize(asset.value, marketEnv)}
+                    </td>
+
+                    {/* Active Qty */}
+                    <td className="py-3 px-2 text-center font-bold">
+                      {isActive ? (
+                        <span className="text-cyan-400">
+                          {formatActiveQty(activeQty, asset.value, marketEnv)}
+                        </span>
+                      ) : (
+                        <span className="text-slate-600">—</span>
+                      )}
+                    </td>
+
+                    {/* LTP */}
+                    <td className="py-3 px-2 text-center text-slate-300 font-bold">
+                      {ltp > 0 ? formatPrice(ltp, marketEnv) : '—'}
+                    </td>
+
+                    {/* Unrealized P&L */}
+                    <td className={`py-3 px-2 text-right font-bold ${unrealizedPnl > 0.001 ? 'text-emerald-400' : unrealizedPnl < -0.001 ? 'text-rose-400' : 'text-slate-500'}`}>
+                      {unrealizedPnl > 0.001 ? '+' : ''}
+                      {formatCurrency(unrealizedPnl, marketEnv)}
+                    </td>
+
+                    {/* Today's P&L */}
+                    <td className={`py-3 px-2 text-right font-black ${todayTotalPnl > 0.001 ? 'text-emerald-400' : todayTotalPnl < -0.001 ? 'text-rose-400' : 'text-slate-500'}`}>
+                      {todayTotalPnl > 0.001 ? '+' : ''}
+                      {formatCurrency(todayTotalPnl, marketEnv)}
+                    </td>
+
+                    {/* Overall P&L */}
+                    <td className={`py-3 px-2 text-right font-black ${overallTotalPnl > 0.001 ? 'text-emerald-400' : overallTotalPnl < -0.001 ? 'text-rose-400' : 'text-slate-500'}`}>
+                      {overallTotalPnl > 0.001 ? '+' : ''}
+                      {formatCurrency(overallTotalPnl, marketEnv)}
+                    </td>
+
+                    {/* Exposure Badge */}
+                    <td className="py-3 px-3 text-center">
+                      {isActive ? (
+                        <span className={`inline-block px-2 py-0.5 rounded text-[8px] font-bold border tracking-wider uppercase ${
+                          direction === 'BUY'
+                            ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/35'
+                            : 'bg-rose-500/10 text-rose-400 border-rose-500/35'
+                        }`}>
+                          {direction === 'BUY' ? 'LONG' : 'SHORT'}
+                        </span>
+                      ) : (
+                        <span className="inline-block px-2 py-0.5 rounded text-[8px] font-bold border border-slate-800 text-slate-500 tracking-wider">
+                          FLAT
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </section>
 
       {/* 3. Split Screen Brokerage Layout */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -1477,13 +1770,13 @@ export default function Dashboard() {
                   </thead>
                   <tbody>
                     <tr className="border-b border-slate-850 hover:bg-slate-900/30">
-                      <td className="py-3 px-2 font-bold text-slate-200">{openPosition.symbol} {openPosition.direction === 'BUY' ? 'ATM CE' : 'ATM PE'}</td>
+                      <td className="py-3 px-2 font-bold text-slate-200">{openPosition.symbol} {marketEnv === 'FOREX' ? (openPosition.direction === 'BUY' ? 'LONG' : 'SHORT') : (openPosition.direction === 'BUY' ? 'ATM CE' : 'ATM PE')}</td>
                       <td className="py-3 px-2">
                         <span className={`px-1.5 py-0.5 rounded font-bold text-[9px] ${openPosition.direction === 'BUY' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'}`}>
                           {openPosition.direction}
                         </span>
                       </td>
-                      <td className="py-3 px-2 text-slate-300 font-bold">{openPosition.quantity}</td>
+                      <td className="py-3 px-2 text-slate-300 font-bold">{formatActiveQty(openPosition.quantity, openPosition.symbol, marketEnv)}</td>
                       <td className="py-3 px-2 text-slate-300">{formatPrice(Number(openPosition.entry_price), marketEnv)}</td>
                       <td className="py-3 px-2 text-cyan-400 font-bold animate-pulse">{formatPrice(liveSpotPrice, marketEnv)}</td>
                       <td className={`py-3 px-2 text-right font-black ${liveUnrealizedPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
@@ -1522,6 +1815,28 @@ export default function Dashboard() {
                   });
                   const isCurrentAsset = isAssetMatch(selectedAsset, t.symbol);
 
+                  // Selected asset match - show real-time progress slider
+                  const entry = Number(t.entry_price);
+                  const current = livePrices[t.symbol] || (isCurrentAsset ? liveSpotPrice : entry);
+                  const isBuy = t.direction === 'BUY';
+                  
+                  const parsed = parseSlTpFromLogic(t.setup_logic || "");
+                  const slVal = parsed ? parsed.sl : (t.direction === 'BUY' ? Number(t.entry_price - 150) : Number(t.entry_price + 150));
+                  const tpVal = parsed ? parsed.tp : (t.direction === 'BUY' ? Number(t.entry_price + 300) : Number(t.entry_price - 300));
+                  
+                  let progressPercent = 50;
+                  if (isBuy) {
+                    if (tpVal > slVal) {
+                      progressPercent = ((current - slVal) / (tpVal - slVal)) * 100;
+                    }
+                  } else {
+                    if (slVal > tpVal) {
+                      progressPercent = ((slVal - current) / (slVal - tpVal)) * 100;
+                    }
+                  }
+                  const clampedPercent = Math.max(0, Math.min(100, progressPercent));
+                  const currentUnrealized = isBuy ? (current - entry) * t.quantity : (entry - current) * t.quantity;
+
                   return (
                     <div 
                       key={t.id}
@@ -1537,7 +1852,7 @@ export default function Dashboard() {
 
                       {/* Body */}
                       <div className="flex items-center justify-between mb-3">
-                        <span className="text-xs font-bold text-slate-200">{t.symbol} {t.direction === 'BUY' ? 'ATM CE' : 'ATM PE'}</span>
+                        <span className="text-xs font-bold text-slate-200">{t.symbol} {marketEnv === 'FOREX' ? (t.direction === 'BUY' ? 'LONG' : 'SHORT') : (t.direction === 'BUY' ? 'ATM CE' : 'ATM PE')}</span>
                         <span className="text-xs font-bold font-mono text-slate-300">
                           {formatPrice(Number(t.entry_price), marketEnv)}
                         </span>
@@ -1553,100 +1868,54 @@ export default function Dashboard() {
                         </div>
 
                         {/* Trade SL & TP Targets Display */}
-                        {(() => {
-                          const parsed = parseSlTpFromLogic(t.setup_logic || "");
-                          const slVal = parsed ? parsed.sl : (t.direction === 'BUY' ? Number(t.entry_price - 150) : Number(t.entry_price + 150));
-                          const tpVal = parsed ? parsed.tp : (t.direction === 'BUY' ? Number(t.entry_price + 300) : Number(t.entry_price - 300));
-                          
-                          if (!isCurrentAsset) {
-                            return (
-                              <div className="space-y-1.5">
-                                <div className="grid grid-cols-2 gap-3 bg-slate-950/60 p-2 rounded-lg border border-slate-850/50">
-                                  <div>
-                                    <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5">STOP LOSS</span>
-                                    <span className="text-rose-400 font-bold font-mono text-[11px]">{formatPrice(slVal, marketEnv)}</span>
-                                  </div>
-                                  <div>
-                                    <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5 text-right">TAKE PROFIT</span>
-                                    <span className="text-emerald-400 font-bold font-mono text-[11px] block text-right">{formatPrice(tpVal, marketEnv)}</span>
-                                  </div>
-                                </div>
-                                <div className="text-center text-[9px] text-slate-500 bg-slate-900/40 py-1 rounded border border-slate-850/30">
-                                  Select {t.symbol} in dashboard to see live tracking.
-                                </div>
-                              </div>
-                            );
-                          }
-
-                          // Selected asset match - show real-time progress slider
-                          const entry = Number(t.entry_price);
-                          const current = liveSpotPrice;
-                          const isBuy = t.direction === 'BUY';
-                          
-                          let progressPercent = 50;
-                          if (isBuy) {
-                            if (tpVal > slVal) {
-                              progressPercent = ((current - slVal) / (tpVal - slVal)) * 100;
-                            }
-                          } else {
-                            if (slVal > tpVal) {
-                              progressPercent = ((slVal - current) / (slVal - tpVal)) * 100;
-                            }
-                          }
-                          const clampedPercent = Math.max(0, Math.min(100, progressPercent));
-                          const currentUnrealized = isBuy ? (current - entry) * t.quantity : (entry - current) * t.quantity;
-
-                          return (
-                            <div className="space-y-2">
-                              <div className="grid grid-cols-2 gap-3 bg-slate-950/60 p-2 rounded-lg border border-slate-850/50">
-                                <div>
-                                  <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5">STOP LOSS</span>
-                                  <span className="text-rose-400 font-bold font-mono text-[11px]">{formatPrice(slVal, marketEnv)}</span>
-                                </div>
-                                <div>
-                                  <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5 text-right">TAKE PROFIT</span>
-                                  <span className="text-emerald-400 font-bold font-mono text-[11px] block text-right">{formatPrice(tpVal, marketEnv)}</span>
-                                </div>
-                              </div>
-
-                              {/* Progress bar */}
-                              <div className="bg-slate-950/50 p-2 rounded-lg border border-slate-850/30">
-                                <div className="flex justify-between text-[8px] text-slate-500 font-mono mb-1">
-                                  <span>SL</span>
-                                  <span>ENTRY ({formatPrice(entry, marketEnv)})</span>
-                                  <span>TP</span>
-                                </div>
-                                <div className="relative h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
-                                  <div 
-                                    className="absolute top-0 bottom-0 bg-emerald-500/20"
-                                    style={{ left: isBuy ? '50%' : '0%', right: isBuy ? '0%' : '50%' }}
-                                  />
-                                  <div 
-                                    className="absolute top-0 bottom-0 bg-rose-500/20"
-                                    style={{ left: isBuy ? '0%' : '50%', right: isBuy ? '50%' : '0%' }}
-                                  />
-                                  <div 
-                                    className="absolute top-0 bottom-0 w-1.5 bg-cyan-400 shadow-md shadow-cyan-400/80 rounded-full transition-all duration-300"
-                                    style={{ left: `calc(${clampedPercent}% - 3px)` }}
-                                  />
-                                </div>
-                                <div className="flex justify-between text-[8px] text-slate-400 font-mono mt-1">
-                                  <span>{formatPrice(slVal, marketEnv)}</span>
-                                  <span className="text-cyan-400 font-bold animate-pulse">LTP: {formatPrice(current, marketEnv)}</span>
-                                  <span>{formatPrice(tpVal, marketEnv)}</span>
-                                </div>
-                              </div>
-
-                              {/* Live P&L outcome */}
-                              <div className="pt-2 border-t border-slate-850/30 flex items-center justify-between">
-                                <span className="text-slate-500 uppercase tracking-widest text-[8px]">Floating Return</span>
-                                <span className={`text-xs font-black ${currentUnrealized >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
-                                  {currentUnrealized >= 0 ? '+' : ''}{formatCurrency(currentUnrealized, marketEnv)}
-                                </span>
-                              </div>
+                        <div className="space-y-2">
+                          <div className="grid grid-cols-2 gap-3 bg-slate-950/60 p-2 rounded-lg border border-slate-850/50">
+                            <div>
+                              <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5">STOP LOSS</span>
+                              <span className="text-rose-400 font-bold font-mono text-[11px]">{formatPrice(slVal, marketEnv)}</span>
                             </div>
-                          );
-                        })()}
+                            <div>
+                              <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5 text-right">TAKE PROFIT</span>
+                              <span className="text-emerald-400 font-bold font-mono text-[11px] block text-right">{formatPrice(tpVal, marketEnv)}</span>
+                            </div>
+                          </div>
+
+                          {/* Progress bar */}
+                          <div className="bg-slate-950/50 p-2 rounded-lg border border-slate-850/30">
+                            <div className="flex justify-between text-[8px] text-slate-500 font-mono mb-1">
+                              <span>SL</span>
+                              <span>ENTRY ({formatPrice(entry, marketEnv)})</span>
+                              <span>TP</span>
+                            </div>
+                            <div className="relative h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
+                              <div 
+                                className="absolute top-0 bottom-0 bg-emerald-500/20"
+                                style={{ left: isBuy ? '50%' : '0%', right: isBuy ? '0%' : '50%' }}
+                              />
+                              <div 
+                                className="absolute top-0 bottom-0 bg-rose-500/20"
+                                style={{ left: isBuy ? '0%' : '50%', right: isBuy ? '50%' : '0%' }}
+                              />
+                              <div 
+                                className="absolute top-0 bottom-0 w-1.5 bg-cyan-400 shadow-md shadow-cyan-400/80 rounded-full transition-all duration-300"
+                                style={{ left: `calc(${clampedPercent}% - 3px)` }}
+                              />
+                            </div>
+                            <div className="flex justify-between text-[8px] text-slate-400 font-mono mt-1">
+                              <span>{formatPrice(slVal, marketEnv)}</span>
+                              <span className="text-cyan-400 font-bold animate-pulse">LTP: {formatPrice(current, marketEnv)}</span>
+                              <span>{formatPrice(tpVal, marketEnv)}</span>
+                            </div>
+                          </div>
+
+                          {/* Live P&L outcome */}
+                          <div className="pt-2 border-t border-slate-850/30 flex items-center justify-between">
+                            <span className="text-slate-500 uppercase tracking-widest text-[8px]">Floating Return</span>
+                            <span className={`text-xs font-black ${currentUnrealized >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                              {currentUnrealized >= 0 ? '+' : ''}{formatCurrency(currentUnrealized, marketEnv)}
+                            </span>
+                          </div>
+                        </div>
 
                         <div className="flex items-center justify-between gap-4">
                           <div>
@@ -1666,7 +1935,7 @@ export default function Dashboard() {
                           <div>
                             <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5 text-right">Lot Quantity</span>
                             <span className="text-slate-300 font-bold block text-right mt-0.5">
-                              {t.quantity} Units
+                              {formatActiveQty(t.quantity, t.symbol, marketEnv)}
                             </span>
                           </div>
                         </div>
@@ -1760,7 +2029,7 @@ export default function Dashboard() {
 
                           {/* Body: Symbol & Price */}
                           <div className="flex items-center justify-between">
-                            <span className="text-xs font-bold text-slate-200">{t.symbol} {t.direction === 'BUY' ? 'ATM CE' : 'ATM PE'}</span>
+                            <span className="text-xs font-bold text-slate-200">{t.symbol} {marketEnv === 'FOREX' ? (t.direction === 'BUY' ? 'LONG' : 'SHORT') : (t.direction === 'BUY' ? 'ATM CE' : 'ATM PE')}</span>
                             <span className="text-xs font-bold font-mono text-slate-300">
                               {formatPrice(Number(t.entry_price), marketEnv)}
                             </span>
