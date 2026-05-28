@@ -84,11 +84,13 @@ interface AccountMetrics {
 
 // Supported Assets Configuration
 const FOREX_ASSETS = [
-  { value: 'EURUSD=X', label: 'EUR / USD', category: 'Forex Pairs' },
-  { value: 'GBPUSD=X', label: 'GBP / USD', category: 'Forex Pairs' },
-  { value: 'USDJPY=X', label: 'USD / JPY', category: 'Forex Pairs' },
-  { value: 'AUDUSD=X', label: 'AUD / USD', category: 'Forex Pairs' },
-  { value: 'USDCAD=X', label: 'USD / CAD', category: 'Forex Pairs' },
+  { value: 'EURUSD=X', label: 'EUR / USD', category: 'Forex' },
+  { value: 'GBPUSD=X', label: 'GBP / USD', category: 'Forex' },
+  { value: 'USDJPY=X', label: 'USD / JPY', category: 'Forex' },
+  { value: 'AUDUSD=X', label: 'AUD / USD', category: 'Forex' },
+  { value: 'USDCAD=X', label: 'USD / CAD', category: 'Forex' },
+  { value: 'GC=F', label: 'Gold Spot', category: 'Commodities' },
+  { value: 'BTC-USD', label: 'Bitcoin USD', category: 'Crypto' },
 ];
 
 const INDIAN_ASSETS = [
@@ -232,12 +234,6 @@ const INDIAN_ASSETS = [
   { value: '^GDAXI', label: 'DAX (Germany)', category: 'Global Indices' },
   { value: '^FTSE', label: 'FTSE 100 (UK)', category: 'Global Indices' },
   { value: '^FCHI', label: 'CAC 40 (France)', category: 'Global Indices' },
-  
-  // Forex / Commodities / Crypto
-  { value: 'EURUSD=X', label: 'EUR / USD', category: 'Forex' },
-  { value: 'GBPUSD=X', label: 'GBP / USD', category: 'Forex' },
-  { value: 'GC=F', label: 'Gold Spot', category: 'Commodities' },
-  { value: 'BTC-USD', label: 'Bitcoin USD', category: 'Crypto' },
 ];
 
 // Map between chart ticker values and DB symbol names
@@ -245,6 +241,13 @@ const SYMBOL_MAP: Record<string, string[]> = {
   '^NSEI':    ['NIFTY 50', 'NIFTY50', 'NSE:NIFTY50-INDEX'],
   '^NSEBANK': ['BANK NIFTY', 'BANKNIFTY', 'NSE:NIFTYBANK-INDEX'],
   '^BSESN':   ['SENSEX', 'BSE:SENSEX'],
+  'EURUSD=X': ['EURUSD=X', 'EUR/USD', 'EURUSD'],
+  'GBPUSD=X': ['GBPUSD=X', 'GBP/USD', 'GBPUSD'],
+  'USDJPY=X': ['USDJPY=X', 'USD/JPY', 'USDJPY'],
+  'AUDUSD=X': ['AUDUSD=X', 'AUD/USD', 'AUDUSD'],
+  'USDCAD=X': ['USDCAD=X', 'USD/CAD', 'USDCAD'],
+  'GC=F':     ['GC=F', 'GOLD', 'Gold Spot', 'XAU/USD', 'XAUUSD'],
+  'BTC-USD':  ['BTC-USD', 'BTC/USD', 'BTCUSD', 'Bitcoin USD', 'Bitcoin'],
 };
 
 const isAssetMatch = (assetVal: string, symbol: string) => {
@@ -491,6 +494,9 @@ export default function Dashboard() {
   const fvgTopSeriesRef = useRef<any>(null);
   const fvgBottomSeriesRef = useRef<any>(null);
   const equityAreaSeriesRef = useRef<any>(null);
+  const activeEntryLineRef = useRef<any>(null);
+  const activeSlLineRef = useRef<any>(null);
+  const activeTpLineRef = useRef<any>(null);
 
   // Initialize clock and mount state
   useEffect(() => {
@@ -949,6 +955,65 @@ export default function Dashboard() {
       updateEquityCurveChart(trades);
     }
   }, [trades, mounted]);
+
+  // Reactive Active Trade Price Lines Overlay
+  useEffect(() => {
+    if (mounted && candleSeriesRef.current) {
+      const openPosition = trades.find(t => t.status === 'OPEN' && isAssetMatch(selectedAsset, t.symbol));
+      
+      // Clean up previous lines
+      if (activeEntryLineRef.current) {
+        try { candleSeriesRef.current.removePriceLine(activeEntryLineRef.current); } catch(e){}
+        activeEntryLineRef.current = null;
+      }
+      if (activeSlLineRef.current) {
+        try { candleSeriesRef.current.removePriceLine(activeSlLineRef.current); } catch(e){}
+        activeSlLineRef.current = null;
+      }
+      if (activeTpLineRef.current) {
+        try { candleSeriesRef.current.removePriceLine(activeTpLineRef.current); } catch(e){}
+        activeTpLineRef.current = null;
+      }
+      
+      // Draw new lines if there is an active trade
+      if (openPosition) {
+        const parsed = parseSlTpFromLogic(openPosition.setup_logic || "");
+        const slVal = parsed ? parsed.sl : (openPosition.direction === 'BUY' ? Number(openPosition.entry_price) * 0.99 : Number(openPosition.entry_price) * 1.01);
+        const tpVal = parsed ? parsed.tp : (openPosition.direction === 'BUY' ? Number(openPosition.entry_price) * 1.02 : Number(openPosition.entry_price) * 0.98);
+        
+        try {
+          activeEntryLineRef.current = candleSeriesRef.current.createPriceLine({
+            price: Number(openPosition.entry_price),
+            color: '#06b6d4', // cyan-500
+            lineWidth: 1.5,
+            lineStyle: 2, // dashed
+            axisLabelVisible: true,
+            title: `ENTRY: ${formatPrice(Number(openPosition.entry_price), marketEnv)}`,
+          });
+          
+          activeSlLineRef.current = candleSeriesRef.current.createPriceLine({
+            price: slVal,
+            color: '#f43f5e', // rose-500
+            lineWidth: 2,
+            lineStyle: 2, // dashed
+            axisLabelVisible: true,
+            title: `SL: ${formatPrice(slVal, marketEnv)}`,
+          });
+          
+          activeTpLineRef.current = candleSeriesRef.current.createPriceLine({
+            price: tpVal,
+            color: '#10b981', // emerald-500
+            lineWidth: 2,
+            lineStyle: 2, // dashed
+            axisLabelVisible: true,
+            title: `TP: ${formatPrice(tpVal, marketEnv)}`,
+          });
+        } catch (e) {
+          console.error("Error drawing active trade price lines on chart:", e);
+        }
+      }
+    }
+  }, [trades, selectedAsset, mounted, marketEnv]);
 
   const copyToClipboard = (hash: string) => {
     navigator.clipboard.writeText(hash);
