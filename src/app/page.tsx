@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createChart, ColorType, CandlestickSeries, LineSeries, AreaSeries, createSeriesMarkers } from 'lightweight-charts';
 import { createClient } from '@supabase/supabase-js';
+import * as XLSX from 'xlsx';
 
 // Setup Supabase Client
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://znejercxaxygncotvqpa.supabase.co";
@@ -520,7 +521,15 @@ export default function Dashboard() {
   const assetRef = useRef('^NSEI');
 
   const ASSETS = marketEnv === 'FOREX' ? FOREX_ASSETS : INDIAN_ASSETS;
-  const startingCapital = marketEnv === 'FOREX' ? 10000.00 : 100000.00;
+  // Updated: Forex capital = $100,000 | Indian = ₹1,00,000
+  const startingCapital = 100000.00;
+  // Daily loss risk threshold: $5,000 for Forex | ₹2,000 for Indian
+  const dailyLossThreshold = marketEnv === 'FOREX' ? -5000.0 : -2000.0;
+
+  // Auth state for Google Sign-In
+  const [user, setUser] = useState<any>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [bannersDismissed, setBannersDismissed] = useState<Record<string, boolean>>({});
 
   // Auto-switch default asset on environment change
   useEffect(() => {
@@ -591,6 +600,38 @@ export default function Dashboard() {
   const activeEntryLineRef = useRef<any>(null);
   const activeSlLineRef = useRef<any>(null);
   const activeTpLineRef = useRef<any>(null);
+
+  // ── Google Sign-In via Supabase Auth ──────────────────────────────────────
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        setUser(session?.user ?? null);
+      } catch {
+        setUser(null);
+      } finally {
+        setAuthLoading(false);
+      }
+    };
+    initAuth();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      setUser(session?.user ?? null);
+      if (event === 'SIGNED_IN' && session?.user) {
+        try {
+          await supabase.from('access_logs').insert({
+            email: session.user.email,
+            user_id: session.user.id,
+            accessed_at: new Date().toISOString(),
+            user_agent: typeof navigator !== 'undefined' ? navigator.userAgent : 'unknown',
+            provider: session.user.app_metadata?.provider || 'google',
+          });
+        } catch { /* non-critical */ }
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
 
   // Initialize clock and mount state
   useEffect(() => {
@@ -686,7 +727,7 @@ export default function Dashboard() {
             win_rate: Number(calculatedWinRate.toFixed(2)),
             net_profit: realizedPnl,
             active_allocations: active,
-            safety_state: (marketEnv === 'FOREX' ? realizedPnl <= -200.0 : realizedPnl <= -2000.0) ? "DAILY_LOSS_HALT" : "SAFE",
+            safety_state: (marketEnv === 'FOREX' ? realizedPnl <= -5000.0 : realizedPnl <= -2000.0) ? "DAILY_LOSS_HALT" : "SAFE",
             daily_realized_pnl: Number(summaryData.daily_realized_pnl),
             total_trades: tradesData.length
           });
@@ -1157,12 +1198,21 @@ export default function Dashboard() {
   const openPosition = trades.find(t => t.status === 'OPEN' && isAssetMatch(selectedAsset, t.symbol)) ?? null;
   // Any other open position on a different asset
   const otherOpenPosition = trades.find(t => t.status === 'OPEN' && !isAssetMatch(selectedAsset, t.symbol)) ?? null;
+
+  // Helper: alias-aware live price lookup — fixes BANK NIFTY always showing $0
+  const getLivePrice = (symbol: string, fallback: number): number => {
+    if (livePrices[symbol] !== undefined) return livePrices[symbol];
+    const aliasEntry = Object.entries(livePrices).find(
+      ([k]) => isAssetMatch(k, symbol) || isAssetMatch(symbol, k)
+    );
+    return aliasEntry ? aliasEntry[1] : fallback;
+  };
   
   // Calculate portfolio-wide live unrealized pnl (all open positions combined)
   const portfolioUnrealizedPnl = trades
     .filter(t => t.status === 'OPEN')
     .reduce((acc, t) => {
-      const livePrice = livePrices[t.symbol] || Number(t.entry_price);
+      const livePrice = getLivePrice(t.symbol, Number(t.entry_price));
       const delta = t.direction === 'BUY'
         ? livePrice - Number(t.entry_price)
         : Number(t.entry_price) - livePrice;
@@ -1172,7 +1222,7 @@ export default function Dashboard() {
   // Calculate live unrealized pnl for selected asset only
   let liveUnrealizedPnl = 0.00;
   if (openPosition) {
-    const livePrice = livePrices[openPosition.symbol] || liveSpotPrice;
+    const livePrice = getLivePrice(openPosition.symbol, liveSpotPrice);
     const delta = openPosition.direction === 'BUY' 
       ? livePrice - Number(openPosition.entry_price)
       : Number(openPosition.entry_price) - livePrice;
@@ -1199,7 +1249,7 @@ export default function Dashboard() {
 
   const assetUnrealized = assetOpenTrades.reduce((sum, t) => {
     const entry = Number(t.entry_price);
-    const current = livePrices[t.symbol] || (isAssetMatch(selectedAsset, t.symbol) ? liveSpotPrice : entry);
+    const current = getLivePrice(t.symbol, isAssetMatch(selectedAsset, t.symbol) ? liveSpotPrice : entry);
     const delta = t.direction === 'BUY' ? current - entry : entry - current;
     return sum + (delta * Number(t.quantity));
   }, 0);
@@ -1211,6 +1261,121 @@ export default function Dashboard() {
 
   const assetOverallRealized = assetClosedTrades.reduce((sum, t) => sum + computePnl(t), 0);
   const assetOverallPnl = assetOverallRealized + assetUnrealized;
+
+  // ── Today's trade count (IST) for daily limit banner ──────────────────────
+  const todayStartIST = (() => {
+    const d = new Date();
+    const ist = new Date(d.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+    ist.setHours(0, 0, 0, 0);
+    const offset = d.getTime() - new Date(d.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' })).getTime();
+    return new Date(ist.getTime() + offset);
+  })();
+  const todayTradeCount = trades.filter(t => new Date(t.entry_time) >= todayStartIST).length;
+  const dailyLimitReached = todayTradeCount >= 2;
+  const dailyLossRisk = metrics.daily_realized_pnl <= dailyLossThreshold;
+
+  // ── Excel Download (4-sheet .xlsx) ────────────────────────────────────────
+  const downloadExcel = () => {
+    const wb = XLSX.utils.book_new();
+    const allClosedTrades = trades.filter(t => t.status === 'CLOSED');
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    const toRow = (t: Trade) => ({
+      'Date': new Date(t.entry_time).toLocaleDateString('en-IN'),
+      'Symbol': t.symbol,
+      'Direction': t.direction,
+      'Type': t.direction === 'BUY' ? 'LONG' : 'SHORT',
+      'Entry Price': Number(t.entry_price),
+      'Exit Price': Number(t.exit_price) || '',
+      'Quantity': t.quantity,
+      'P&L': computePnl(t).toFixed(2),
+      'Outcome': computePnl(t) >= 0 ? 'PROFIT' : 'LOSS',
+      'Setup': (t.setup_logic || '').slice(0, 80),
+      'Entry Time': t.entry_time,
+      'Exit Time': t.exit_time || '',
+    });
+
+    const monthlyAll = allClosedTrades.filter(t => new Date(t.entry_time) >= monthStart);
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(monthlyAll.map(toRow)), 'All Trades');
+
+    const indianSymbols = ['NIFTY', 'BANK', 'SENSEX'];
+    const indianTrades = monthlyAll.filter(t => indianSymbols.some(s => t.symbol.toUpperCase().includes(s)));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(indianTrades.map(toRow)), 'Indian Indices');
+
+    const forexKeywords = ['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'GOLD', 'BTC', 'XAU'];
+    const forexTradesList = monthlyAll.filter(t => forexKeywords.some(s => t.symbol.toUpperCase().includes(s)));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(forexTradesList.map(toRow)), 'Forex');
+
+    const weekMap: Record<string, { pnl: number; count: number; wins: number }> = {};
+    allClosedTrades.forEach(t => {
+      const d = new Date(t.entry_time);
+      const weekKey = `${d.getFullYear()}-W${String(Math.ceil(d.getDate() / 7)).padStart(2, '0')} (${d.toLocaleString('en-IN', { month: 'short' })})`;
+      if (!weekMap[weekKey]) weekMap[weekKey] = { pnl: 0, count: 0, wins: 0 };
+      const p = computePnl(t);
+      weekMap[weekKey].pnl += p;
+      weekMap[weekKey].count += 1;
+      if (p > 0) weekMap[weekKey].wins += 1;
+    });
+    const summaryRows = Object.entries(weekMap).map(([week, s]) => ({
+      'Period': week,
+      'Trades': s.count,
+      'Wins': s.wins,
+      'Win %': s.count > 0 ? ((s.wins / s.count) * 100).toFixed(1) + '%' : '0%',
+      'Net P&L': s.pnl.toFixed(2),
+    }));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summaryRows), 'Monthly Summary');
+
+    const monthStr = now.toLocaleString('en-IN', { year: 'numeric', month: 'short' }).replace(' ', '-');
+    XLSX.writeFile(wb, `BIFROST_Trades_${monthStr}.xlsx`);
+  };
+
+  // Auth loading state
+  if (authLoading) {
+    return (
+      <div className="flex h-screen w-full items-center justify-center bg-[#02050f] text-cyan-400 font-mono">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-10 w-10 border-t-2 border-b-2 border-cyan-500 mx-auto mb-4"></div>
+          <div className="tracking-widest uppercase text-xs">AUTHENTICATING...</div>
+        </div>
+      </div>
+    );
+  }
+
+  // Login screen (Google Sign-In gate)
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-[#02050f] flex items-center justify-center p-4">
+        <div className="relative border border-slate-800 bg-[#070b15]/95 backdrop-blur-md rounded-3xl p-10 shadow-2xl max-w-md w-full text-center overflow-hidden">
+          <div className="absolute top-0 left-1/2 -translate-x-1/2 w-96 h-32 bg-cyan-500/10 rounded-full blur-3xl -z-10" />
+          <div className="flex items-center justify-center mb-6">
+            <div className="relative flex items-center justify-center h-16 w-16 rounded-2xl bg-gradient-to-tr from-cyan-600 to-indigo-700 shadow-lg shadow-cyan-900/40">
+              <span className="text-3xl font-black text-white">B</span>
+              <div className="absolute inset-0 rounded-2xl border border-cyan-400/30 animate-pulse" />
+            </div>
+          </div>
+          <h1 className="text-2xl font-black tracking-wider bg-gradient-to-r from-slate-100 via-cyan-100 to-cyan-400 bg-clip-text text-transparent mb-2">
+            BIFROST // QUANT_ENGINE
+          </h1>
+          <p className="text-slate-500 text-xs font-mono tracking-widest uppercase mb-2">Algorithmic Trading Intelligence</p>
+          <div className="my-6 border-t border-slate-800" />
+          <p className="text-slate-400 text-sm mb-6">Sign in to access your real-time trading dashboard</p>
+          <button
+            id="google-signin-btn"
+            onClick={() => supabase.auth.signInWithOAuth({
+              provider: 'google',
+              options: { redirectTo: typeof window !== 'undefined' ? window.location.origin : '' }
+            })}
+            className="w-full flex items-center justify-center gap-3 bg-white hover:bg-slate-100 text-slate-900 font-bold rounded-xl py-3 px-6 transition-all duration-200 shadow-lg hover:shadow-xl hover:scale-[1.02] active:scale-[0.98]"
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+            Continue with Google
+          </button>
+          <p className="text-slate-600 text-[10px] font-mono mt-4">Access is logged and monitored. Authorised personnel only.</p>
+        </div>
+      </div>
+    );
+  }
 
   if (!mounted) {
     return (
@@ -1314,11 +1479,48 @@ export default function Dashboard() {
           <div className="border border-slate-800 bg-slate-900/40 px-3 py-1.5 rounded-lg text-cyan-400 font-semibold shadow-inner">
             {currentTimeStr}
           </div>
+
+          {/* Excel Download Button */}
+          <button
+            id="download-excel-btn"
+            onClick={downloadExcel}
+            title="Download Monthly Trade Report (Excel)"
+            className="flex items-center gap-1.5 border border-emerald-500/30 bg-emerald-500/8 hover:bg-emerald-500/15 text-emerald-400 hover:text-emerald-300 px-3 py-1.5 rounded-lg text-[10px] font-mono font-bold tracking-wider transition-all cursor-pointer"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            EXPORT
+          </button>
+
+          {/* User Avatar + Sign Out */}
+          {user && (
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5 border border-slate-800 bg-slate-900/40 px-2 py-1 rounded-lg">
+                {user.user_metadata?.avatar_url ? (
+                  <img src={user.user_metadata.avatar_url} alt="avatar" className="h-5 w-5 rounded-full object-cover" />
+                ) : (
+                  <div className="h-5 w-5 rounded-full bg-gradient-to-tr from-cyan-600 to-indigo-700 flex items-center justify-center text-[9px] font-black text-white">
+                    {(user.email || 'U')[0].toUpperCase()}
+                  </div>
+                )}
+                <span className="text-[9px] text-slate-400 font-mono max-w-[80px] truncate hidden sm:block">
+                  {user.user_metadata?.full_name || user.email?.split('@')[0] || 'User'}
+                </span>
+              </div>
+              <button
+                id="sign-out-btn"
+                onClick={() => supabase.auth.signOut()}
+                className="border border-slate-700 hover:border-rose-500/40 text-slate-500 hover:text-rose-400 px-2 py-1 rounded-lg text-[9px] font-mono font-bold tracking-wider transition-all cursor-pointer"
+                title="Sign Out"
+              >
+                SIGN OUT
+              </button>
+            </div>
+          )}
         </div>
       </header>
 
       {/* 2. Top-Line Metrics Grid */}
-      <section className="grid grid-cols-2 lg:grid-cols-6 gap-4 mb-6">
+      <section className="grid grid-cols-2 lg:grid-cols-7 gap-3 mb-6">
         {/* Net Equity */}
         <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
           <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Net Equity</span>
@@ -1337,9 +1539,7 @@ export default function Dashboard() {
             {portfolioRealizedPnl + portfolioUnrealizedPnl >= 0 ? "+" : ""}
             {formatCurrency(portfolioRealizedPnl + portfolioUnrealizedPnl, marketEnv)}
           </span>
-          <div className="text-[10px] text-slate-500 mt-1 font-mono">
-            Realized + Float PnL
-          </div>
+          <div className="text-[10px] text-slate-500 mt-1 font-mono">Realized + Float PnL</div>
         </div>
 
         {/* Today's Realized P&L */}
@@ -1349,9 +1549,7 @@ export default function Dashboard() {
             {Number(metrics.daily_realized_pnl) + portfolioUnrealizedPnl >= 0 ? "+" : ""}
             {formatCurrency(Number(metrics.daily_realized_pnl) + portfolioUnrealizedPnl, marketEnv)}
           </span>
-          <div className="text-[10px] text-slate-500 mt-1 font-mono">
-            Today's Net Return
-          </div>
+          <div className="text-[10px] text-slate-500 mt-1 font-mono">Today's Net Return</div>
         </div>
 
         {/* Unrealized P&L */}
@@ -1364,31 +1562,50 @@ export default function Dashboard() {
             {portfolioUnrealizedPnl >= 0 ? "+" : ""}
             {formatCurrency(portfolioUnrealizedPnl, marketEnv)}
           </span>
-          <div className="text-[10px] text-slate-500 mt-1 font-mono">
-            Active position float
+          <div className="text-[10px] text-slate-500 mt-1 font-mono">Active position float</div>
+        </div>
+
+        {/* Today's Trades — split card */}
+        <div className={`relative border rounded-2xl p-4 shadow-xl ${
+          dailyLimitReached ? 'border-amber-500/40 bg-amber-500/5' : 'border-slate-800 bg-[#070b15]/80'
+        }`}>
+          {dailyLimitReached && (
+            <div className="absolute top-2 right-2">
+              <span className="text-[8px] font-bold font-mono px-1 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/25 animate-pulse">LIMIT</span>
+            </div>
+          )}
+          <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Today's Trades</span>
+          <span className={`text-xl md:text-2xl font-black font-mono ${dailyLimitReached ? 'text-amber-400' : 'text-slate-100'}`}>
+            {todayTradeCount}
+          </span>
+          <div className="text-[10px] mt-1 font-mono flex items-center justify-between">
+            <span className="text-slate-500">/ 2 daily limit</span>
+            <span className={`font-semibold ${dailyLimitReached ? 'text-amber-400' : 'text-emerald-400'}`}>
+              {dailyLimitReached ? 'MAXED' : 'OK'}
+            </span>
           </div>
         </div>
 
-        {/* Today's Session */}
+        {/* Total Trades (all-time) */}
         <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
-          <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Today's Session</span>
+          <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Total Trades</span>
           <span className="text-xl md:text-2xl font-black text-slate-100 font-mono">
             {trades.length}
           </span>
           <div className="text-[10px] text-slate-500 mt-1 font-mono flex items-center justify-between">
-            <span>Total Trades</span>
+            <span>All-Time Count</span>
             <span className="text-cyan-400 font-semibold">{portfolioWinRate}% Win</span>
           </div>
         </div>
 
         {/* Market Exposure */}
         <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
-          <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Market Exposure</span>
+          <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Exposure</span>
           <span className="text-xl md:text-2xl font-black text-slate-100 font-mono">
             {activeTrades.length}
           </span>
           <div className="text-[10px] mt-1 font-mono flex items-center justify-between">
-            <span className="text-slate-500">Active Trades</span>
+            <span className="text-slate-500">Active</span>
             <span className={metrics.safety_state === 'SAFE' ? 'text-emerald-400 font-semibold' : 'text-rose-400 font-black animate-pulse'}>
               {metrics.safety_state}
             </span>
@@ -1396,9 +1613,51 @@ export default function Dashboard() {
         </div>
       </section>
 
+      {/* Daily Limit Reached Banner */}
+      {dailyLimitReached && !bannersDismissed['dailyLimit'] && (
+        <div className="border border-amber-400/30 bg-amber-500/5 backdrop-blur-md rounded-2xl p-4 mb-4 flex items-center justify-between shadow-lg">
+          <div className="flex items-center gap-3">
+            <div className="flex items-center justify-center h-8 w-8 rounded-lg bg-amber-500/20 border border-amber-400/30 text-lg animate-pulse">🚫</div>
+            <div>
+              <div className="text-sm font-black text-amber-300 tracking-wider">
+                DAILY TRADE LIMIT REACHED — {todayTradeCount}/2 TRADES EXECUTED
+              </div>
+              <div className="text-[10px] text-slate-400 font-mono mt-0.5">
+                Maximum 2 trades per session. Engine will not place further orders today.
+              </div>
+            </div>
+          </div>
+          <button
+            onClick={() => setBannersDismissed(p => ({ ...p, dailyLimit: true }))}
+            className="ml-4 text-slate-500 hover:text-slate-300 text-xs font-mono px-2 py-1 rounded border border-slate-700 hover:border-slate-500 transition-colors cursor-pointer"
+          >DISMISS</button>
+        </div>
+      )}
+
+      {/* Daily Loss Risk Banner */}
+      {dailyLossRisk && !bannersDismissed['dailyLoss'] && (
+        <div className="border border-rose-500/30 bg-rose-500/5 backdrop-blur-md rounded-2xl p-4 mb-4 flex items-center justify-between shadow-lg">
+          <div className="flex items-center gap-3">
+            <div className="flex items-center justify-center h-8 w-8 rounded-lg bg-rose-500/20 border border-rose-500/30 text-lg animate-pulse">🔴</div>
+            <div>
+              <div className="text-sm font-black text-rose-400 tracking-wider animate-pulse">
+                ⚡ DAILY LOSS RISK THRESHOLD HIT — {formatCurrency(metrics.daily_realized_pnl, marketEnv)} TODAY
+              </div>
+              <div className="text-[10px] text-slate-400 font-mono mt-0.5">
+                Loss limit: {marketEnv === 'FOREX' ? '$5,000' : '₹2,000'}. Review and consider pausing trading.
+              </div>
+            </div>
+          </div>
+          <button
+            onClick={() => setBannersDismissed(p => ({ ...p, dailyLoss: true }))}
+            className="ml-4 text-slate-500 hover:text-slate-300 text-xs font-mono px-2 py-1 rounded border border-slate-700 hover:border-slate-500 transition-colors cursor-pointer"
+          >DISMISS</button>
+        </div>
+      )}
+
       {/* Cross-Asset Position Warning Banner */}
       {otherOpenPosition && (
-        <div className="border border-amber-500/20 bg-amber-500/5 backdrop-blur-md rounded-2xl p-4 mb-6 flex flex-col md:flex-row items-center justify-between shadow-lg shadow-amber-950/15">
+        <div className="border border-amber-500/20 bg-amber-500/5 backdrop-blur-md rounded-2xl p-4 mb-4 flex flex-col md:flex-row items-center justify-between shadow-lg shadow-amber-950/15">
           <div className="flex items-center gap-3">
             <div className="flex items-center justify-center h-8 w-8 rounded-lg bg-amber-500/15 border border-amber-500/20 text-amber-400 font-bold">
               ⚠️
@@ -1668,7 +1927,8 @@ export default function Dashboard() {
                   <tbody>
                     {activeTrades.map((op) => {
                       const entry = Number(op.entry_price);
-                      const current = livePrices[op.symbol] || (isAssetMatch(selectedAsset, op.symbol) ? liveSpotPrice : entry);
+                      // Use alias-aware getLivePrice() — fixes BANK NIFTY showing $0 P&L
+                      const current = getLivePrice(op.symbol, isAssetMatch(selectedAsset, op.symbol) ? liveSpotPrice : entry);
                       const isBuy = op.direction === 'BUY';
                       const opUnrealized = isBuy ? (current - entry) * op.quantity : (entry - current) * op.quantity;
                       
