@@ -1508,6 +1508,11 @@ export default function Dashboard() {
   const [adminInsightsLoading, setAdminInsightsLoading] = useState(false);
   const [userProfilesList, setUserProfilesList] = useState<any[]>([]);
 
+  // API Configuration settings states
+  const [settingsGeminiKey, setSettingsGeminiKey] = useState('');
+  const [settingsWhatsAppKey, setSettingsWhatsAppKey] = useState('');
+  const [settingsLoading, setSettingsLoading] = useState(false);
+
   // Swing Trading States
   const [swingWatchlist, setSwingWatchlist] = useState<any[]>([]);
   const [swingSignals, setSwingSignals] = useState<any[]>([]);
@@ -1668,6 +1673,49 @@ export default function Dashboard() {
     }
   };
 
+  // Load API Keys Settings
+  const loadSettings = async () => {
+    try {
+      const headers = await getAuthHeaders();
+      const res = await fetch(`${BACKEND_URL}/api/settings`, { headers });
+      if (res.ok) {
+        const data = await res.json();
+        setSettingsGeminiKey(data.gemini_api_key || '');
+        setSettingsWhatsAppKey(data.whatsapp_apikey || '');
+      }
+    } catch (err) {
+      console.error("Error loading settings:", err);
+    }
+  };
+
+  // Save API Keys Settings
+  const handleSaveSettings = async () => {
+    setSettingsLoading(true);
+    try {
+      const headers = await getAuthHeaders();
+      const res = await fetch(`${BACKEND_URL}/api/settings/update`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          gemini_api_key: settingsGeminiKey,
+          whatsapp_apikey: settingsWhatsAppKey
+        })
+      });
+      if (res.ok) {
+        alert("API Settings updated successfully!");
+        loadSettings();
+      } else {
+        const err = await res.json();
+        alert(`Failed to update settings: ${err.detail || 'Server error'}`);
+      }
+    } catch (err) {
+      console.error("Error saving settings:", err);
+      alert("Error saving settings.");
+    } finally {
+      setSettingsLoading(false);
+    }
+  };
+
   // Load Admin dashboard stats
   const loadAdminInsights = async () => {
     setAdminInsightsLoading(true);
@@ -1678,6 +1726,7 @@ export default function Dashboard() {
         const data = await res.json();
         setAdminInsights(data);
         setUserProfilesList(data.user_profiles || []);
+        loadSettings();
       } else {
         console.error("Failed to load admin insights:", res.statusText);
       }
@@ -3906,8 +3955,8 @@ export default function Dashboard() {
             </div>
           )}
 
-          {/* Admin Panel button (only for jitheesjames27@gmail.com) */}
-          {user?.email === 'jitheesjames27@gmail.com' && (
+          {/* Admin Panel button (only for jitheeshjames27@gmail.com) */}
+          {user?.email === 'jitheeshjames27@gmail.com' && (
             <button
               onClick={() => {
                 setIsAdminModalOpen(true);
@@ -5215,6 +5264,45 @@ export default function Dashboard() {
                         <span className="text-slate-600">{new Date(l.created_at).toLocaleTimeString()}</span>
                       </div>
                     ))}
+                  </div>
+                </div>
+
+                {/* API & Bot Configuration Settings */}
+                <div className="bg-slate-900/30 p-4 border border-slate-850 rounded-2xl space-y-4">
+                  <span className="text-[9px] uppercase tracking-widest text-slate-500 block">🔑 API & Bot Configuration Settings</span>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="text-[9px] text-slate-400 block mb-1">GEMINI API KEY</label>
+                      <input
+                        type="password"
+                        placeholder="Enter Gemini API Key (e.g. AIzaSy...)"
+                        value={settingsGeminiKey}
+                        onChange={(e) => setSettingsGeminiKey(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-purple-500 transition-colors"
+                      />
+                      <span className="text-[8px] text-slate-500 mt-1 block">Used for the BIFROST AI chatbot assistant queries. Get a free key at aistudio.google.com</span>
+                    </div>
+                    <div>
+                      <label className="text-[9px] text-slate-400 block mb-1">WHATSAPP CALLMEBOT APIKEY</label>
+                      <input
+                        type="password"
+                        placeholder="Enter CallMeBot API Key"
+                        value={settingsWhatsAppKey}
+                        onChange={(e) => setSettingsWhatsAppKey(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-emerald-500 transition-colors"
+                      />
+                      <span className="text-[8px] text-slate-500 mt-1 block">Used to deliver real-time trade signals and hourly logs to +91 9846278548.</span>
+                    </div>
+                  </div>
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      disabled={settingsLoading}
+                      onClick={handleSaveSettings}
+                      className="bg-purple-650 hover:bg-purple-600 border border-purple-500/30 hover:border-purple-500 text-white font-bold px-4 py-2 rounded-xl text-[10px] cursor-pointer transition-all flex items-center gap-1.5"
+                    >
+                      {settingsLoading ? 'SAVING...' : '💾 SAVE API SETTINGS'}
+                    </button>
                   </div>
                 </div>
 
