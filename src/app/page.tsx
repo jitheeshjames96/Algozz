@@ -5,12 +5,20 @@ import { createChart, ColorType, CandlestickSeries, LineSeries, AreaSeries, crea
 import { createClient } from '@supabase/supabase-js';
 import * as XLSX from 'xlsx';
 
+// Helper to resolve environment variables safely (checking for literal "undefined" or "null" from bundlers)
+const getEnvVal = (val: any, fallback: string): string => {
+  if (!val || val === "undefined" || val === "null" || val === "") {
+    return fallback;
+  }
+  return String(val).trim();
+};
+
 // Setup Supabase Client
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://znejercxaxygncotvqpa.supabase.co";
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpuZWplcmN4YXh5Z25jb3R2cXBhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk3MDE5NTAsImV4cCI6MjA5NTI3Nzk1MH0.pFhQ30-ZGf0af6AdvW1mm0hx66BsRqtlG1muGYLIzBc";
+const supabaseUrl = getEnvVal(process.env.NEXT_PUBLIC_SUPABASE_URL, "https://znejercxaxygncotvqpa.supabase.co");
+const supabaseAnonKey = getEnvVal(process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY, "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpuZWplcmN4YXh5Z25jb3R2cXBhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk3MDE5NTAsImV4cCI6MjA5NTI3Nzk1MH0.pFhQ30-ZGf0af6AdvW1mm0hx66BsRqtlG1muGYLIzBc");
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL !== undefined ? process.env.NEXT_PUBLIC_BACKEND_URL : "http://localhost:8000";
+const BACKEND_URL = getEnvVal(process.env.NEXT_PUBLIC_BACKEND_URL, "http://localhost:8000");
 
 interface Trade {
   id: string;
@@ -635,33 +643,69 @@ export default function Dashboard() {
   // ── Google Sign-In via Supabase Auth ──────────────────────────────────────
   useEffect(() => {
     const initAuth = async () => {
+      console.log("🔍 [BIFROST AUTH] initAuth started");
       try {
+        console.log("🔍 [BIFROST AUTH] calling getSession");
         const { data: { session } } = await supabase.auth.getSession();
+        console.log("🔍 [BIFROST AUTH] getSession completed. Session present:", !!session);
         setUser(session?.user ?? null);
-      } catch {
+      } catch (err) {
+        console.error("🔍 [BIFROST AUTH] getSession failed with error:", err);
         setUser(null);
       } finally {
+        console.log("🔍 [BIFROST AUTH] setting authLoading to false");
         setAuthLoading(false);
       }
     };
-    initAuth();
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      setUser(session?.user ?? null);
-      if (event === 'SIGNED_IN' && session?.user) {
-        try {
-          await supabase.from('access_logs').insert({
-            email: session.user.email,
-            user_id: session.user.id,
-            accessed_at: new Date().toISOString(),
-            user_agent: typeof navigator !== 'undefined' ? navigator.userAgent : 'unknown',
-            provider: session.user.app_metadata?.provider || 'google',
-          });
-        } catch { /* non-critical */ }
+    try {
+      initAuth();
+    } catch (err) {
+      console.error("🔍 [BIFROST AUTH] synchronous error inside initAuth call:", err);
+      setAuthLoading(false);
+    }
+
+    let authSubscription: any = null;
+    try {
+      console.log("🔍 [BIFROST AUTH] setting up onAuthStateChange listener");
+      const { data } = supabase.auth.onAuthStateChange(async (event, session) => {
+        console.log(`🔍 [BIFROST AUTH] onAuthStateChange event: ${event}, user: ${session?.user?.email || 'none'}`);
+        setUser(session?.user ?? null);
+        if (event === 'SIGNED_IN' && session?.user) {
+          try {
+            console.log("🔍 [BIFROST AUTH] logged in. Attempting access log update...");
+            const { error: logErr } = await supabase.from('access_logs').insert({
+              email: session.user.email,
+              user_id: session.user.id,
+              accessed_at: new Date().toISOString(),
+              user_agent: typeof navigator !== 'undefined' ? navigator.userAgent : 'unknown',
+              provider: session.user.app_metadata?.provider || 'google',
+            });
+            if (logErr) {
+              console.warn("🔍 [BIFROST AUTH] access log insert warning:", logErr);
+            } else {
+              console.log("🔍 [BIFROST AUTH] access log successfully recorded.");
+            }
+          } catch (insertErr) {
+            console.warn("🔍 [BIFROST AUTH] access log catch warning:", insertErr);
+          }
+        }
+      });
+      authSubscription = data?.subscription;
+    } catch (err) {
+      console.error("🔍 [BIFROST AUTH] failed to subscribe to onAuthStateChange:", err);
+    }
+
+    return () => {
+      try {
+        if (authSubscription) {
+          console.log("🔍 [BIFROST AUTH] cleaning up auth listener");
+          authSubscription.unsubscribe();
+        }
+      } catch (err) {
+        console.error("🔍 [BIFROST AUTH] clean up subscription unsubscribe error:", err);
       }
-    });
-
-    return () => subscription.unsubscribe();
+    };
   }, []);
 
   // Initialize clock and mount state
