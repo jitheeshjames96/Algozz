@@ -526,6 +526,31 @@ export default function Dashboard() {
   const resolutionRef = useRef('15m');
   const assetRef = useRef('^NSEI');
 
+  // Phase 3 States: Custom Scanner
+  const [customScanTicker, setCustomScanTicker] = useState('');
+  const [customScanResult, setCustomScanResult] = useState<any>(null);
+  const [customScanLoading, setCustomScanLoading] = useState(false);
+
+  // Phase 3 States: AI Assistant
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [chatInput, setChatInput] = useState('');
+  const [chatMessages, setChatMessages] = useState<Array<{ sender: 'user' | 'ai'; text: string; timestamp: Date }>>([
+    {
+      sender: 'ai',
+      text: "Hello! I am your **Bifrost AI Assistant**. Ask me about trades, metrics, engine health, or try *'Scan RELIANCE'*.",
+      timestamp: new Date()
+    }
+  ]);
+  const [chatLoading, setChatLoading] = useState(false);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
+  // AI Assistant auto-scroll effect
+  useEffect(() => {
+    if (isChatOpen) {
+      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [chatMessages, isChatOpen]);
+
   const ASSETS = marketEnv === 'FOREX' ? FOREX_ASSETS : INDIAN_ASSETS;
   // Updated: Forex capital = $100,000 | Indian = ₹1,00,000
   const startingCapital = 100000.00;
@@ -679,82 +704,87 @@ export default function Dashboard() {
       const tradesTable = marketEnv === 'FOREX' ? 'forex_trades' : 'trades';
 
       // 1. Fetch metrics from Supabase
-      const { data: summaryData } = await supabase
+      const { data: summaryData, error: summaryError } = await supabase
         .from(summaryTable)
         .select('*')
         .eq('id', 1)
         .single();
+      if (summaryError) {
+        console.error(`Supabase metrics query error from ${summaryTable}:`, summaryError);
+      }
 
       // 2. Fetch trades from Supabase
-      const { data: tradesData } = await supabase
+      const { data: tradesData, error: tradesError } = await supabase
         .from(tradesTable)
         .select('*')
         .order('entry_time', { ascending: false });
+      if (tradesError) {
+        console.error(`Supabase trades query error from ${tradesTable}:`, tradesError);
+      }
 
-      if (tradesData) {
-        setTrades(tradesData);
+      const resolvedTrades = tradesData || [];
+      setTrades(resolvedTrades);
 
-        // Fetch live prices for active symbols
-        const activeSymbols = Array.from(new Set(tradesData.filter(t => t.status === 'OPEN').map(t => t.symbol)));
-        const newLivePrices: Record<string, number> = {};
-        if (activeSymbols.length > 0) {
-          try {
-            const logsTable = marketEnv === 'FOREX' ? 'forex_execution_logs' : 'execution_logs';
-            const { data: logsData } = await supabase
-              .from(logsTable)
-              .select('contract_targeted, asset_price, timestamp')
-              .in('contract_targeted', activeSymbols)
-              .order('timestamp', { ascending: false });
+      // Fetch live prices for active symbols
+      const activeSymbols = Array.from(new Set(resolvedTrades.filter(t => t.status === 'OPEN').map(t => t.symbol)));
+      const newLivePrices: Record<string, number> = {};
+      if (activeSymbols.length > 0) {
+        try {
+          const logsTable = marketEnv === 'FOREX' ? 'forex_execution_logs' : 'execution_logs';
+          const { data: logsData } = await supabase
+            .from(logsTable)
+            .select('contract_targeted, asset_price, timestamp')
+            .in('contract_targeted', activeSymbols)
+            .order('timestamp', { ascending: false });
 
-            if (logsData) {
-              logsData.forEach(log => {
-                const sym = log.contract_targeted;
-                if (sym && newLivePrices[sym] === undefined) {
-                  newLivePrices[sym] = Number(log.asset_price);
-                }
-              });
-            }
-          } catch (logErr) {
-            console.error("Error fetching live prices from execution logs:", logErr);
+          if (logsData) {
+            logsData.forEach(log => {
+              const sym = log.contract_targeted;
+              if (sym && newLivePrices[sym] === undefined) {
+                newLivePrices[sym] = Number(log.asset_price);
+              }
+            });
           }
+        } catch (logErr) {
+          console.error("Error fetching live prices from execution logs:", logErr);
         }
-        setLivePrices(prev => ({ ...prev, ...newLivePrices }));
-        
-        // Calculate Win Rate using direction-aware P&L
-        const closed = tradesData.filter(t => t.status === 'CLOSED');
-        const wins = closed.filter(t => computePnl(t as Trade) > 0);
-        const calculatedWinRate = closed.length > 0 ? (wins.length / closed.length) * 100 : 0.0;
-        const active = tradesData.filter(t => t.status === 'OPEN').length;
-        const realizedPnl = closed.reduce((acc, curr) => acc + computePnl(curr as Trade), 0);
-        
-        if (summaryData) {
-          setMetrics({
-            account_capital: Number(summaryData.net_equity),
-            win_rate: Number(calculatedWinRate.toFixed(2)),
-            net_profit: realizedPnl,
-            active_allocations: active,
-            safety_state: (marketEnv === 'FOREX' ? realizedPnl <= -5000.0 : realizedPnl <= -2000.0) ? "DAILY_LOSS_HALT" : "SAFE",
-            daily_realized_pnl: Number(summaryData.daily_realized_pnl),
-            total_trades: tradesData.length
-          });
-        } else {
-          // Setup metrics directly from trades
-          setMetrics({
-            account_capital: startingCapital + realizedPnl,
-            win_rate: Number(calculatedWinRate.toFixed(2)),
-            net_profit: realizedPnl,
-            active_allocations: active,
-            safety_state: (marketEnv === 'FOREX' ? realizedPnl <= -200.0 : realizedPnl <= -2000.0) ? "DAILY_LOSS_HALT" : "SAFE",
-            daily_realized_pnl: realizedPnl,
-            total_trades: tradesData.length
-          });
-        }
+      }
+      setLivePrices(prev => ({ ...prev, ...newLivePrices }));
+      
+      // Calculate Win Rate using direction-aware P&L
+      const closed = resolvedTrades.filter(t => t.status === 'CLOSED');
+      const wins = closed.filter(t => computePnl(t as Trade) > 0);
+      const calculatedWinRate = closed.length > 0 ? (wins.length / closed.length) * 100 : 0.0;
+      const active = resolvedTrades.filter(t => t.status === 'OPEN').length;
+      const realizedPnl = closed.reduce((acc, curr) => acc + computePnl(curr as Trade), 0);
+      
+      if (summaryData) {
+        setMetrics({
+          account_capital: Number(summaryData.net_equity),
+          win_rate: Number(calculatedWinRate.toFixed(2)),
+          net_profit: realizedPnl,
+          active_allocations: active,
+          safety_state: (marketEnv === 'FOREX' ? realizedPnl <= -5000.0 : realizedPnl <= -2000.0) ? "DAILY_LOSS_HALT" : "SAFE",
+          daily_realized_pnl: Number(summaryData.daily_realized_pnl),
+          total_trades: resolvedTrades.length
+        });
+      } else {
+        // Setup metrics directly from trades
+        setMetrics({
+          account_capital: startingCapital + realizedPnl,
+          win_rate: Number(calculatedWinRate.toFixed(2)),
+          net_profit: realizedPnl,
+          active_allocations: active,
+          safety_state: (marketEnv === 'FOREX' ? realizedPnl <= -200.0 : realizedPnl <= -2000.0) ? "DAILY_LOSS_HALT" : "SAFE",
+          daily_realized_pnl: realizedPnl,
+          total_trades: resolvedTrades.length
+        });
+      }
 
-        // Update live spot price from open trade if exists
-        const openTrade = tradesData.find(t => t.status === 'OPEN' && isAssetMatch(assetRef.current, t.symbol));
-        if (openTrade) {
-          setLiveSpotPrice(Number(openTrade.entry_price));
-        }
+      // Update live spot price from open trade if exists
+      const openTrade = resolvedTrades.find(t => t.status === 'OPEN' && isAssetMatch(assetRef.current, t.symbol));
+      if (openTrade) {
+        setLiveSpotPrice(Number(openTrade.entry_price));
       }
     } catch (e) {
       console.error("Error loading data:", e);
@@ -1082,9 +1112,9 @@ export default function Dashboard() {
     loadChartAndState(resolutionRef.current, assetRef.current);
     checkMarketState();
 
-    // 3. Supabase Real-Time Subscriptions
+    // 3. Supabase Real-Time Subscriptions (Utilizing unique channel names to prevent crossover conflicts)
     const tradesChannel = supabase
-      .channel('trades-realtime-channel')
+      .channel(`trades-realtime-channel-${marketEnv}`)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: marketEnv === 'FOREX' ? 'forex_trades' : 'trades' },
@@ -1096,7 +1126,7 @@ export default function Dashboard() {
       .subscribe();
 
     const metricsChannel = supabase
-      .channel('metrics-realtime-channel')
+      .channel(`metrics-realtime-channel-${marketEnv}`)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: marketEnv === 'FOREX' ? 'forex_account_summary' : 'account_summary' },
@@ -1280,60 +1310,195 @@ export default function Dashboard() {
   const dailyLimitReached = todayTradeCount >= 2;
   const dailyLossRisk = metrics.daily_realized_pnl <= dailyLossThreshold;
 
-  // ── Excel Download (4-sheet .xlsx) ────────────────────────────────────────
+  // ── Excel Download (Custom Specific Columns) ──────────────────────────────────
   const downloadExcel = () => {
     const wb = XLSX.utils.book_new();
     const allClosedTrades = trades.filter(t => t.status === 'CLOSED');
     const now = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
 
-    const toRow = (t: Trade) => ({
+    const monthlyTrades = allClosedTrades.filter(t => new Date(t.entry_time) >= monthStart);
+
+    if (marketEnv === 'INDIAN') {
+      const parseOptionDetails = (setup: string) => {
+        const strikeMatch = setup.match(/Strike:\s*([0-9.]+)/i);
+        const typeMatch = setup.match(/Option\s*Type:\s*(CE|PE)/i);
+        const spotMatch = setup.match(/Spot:\s*([0-9.]+)/i);
+        const slMatch = setup.match(/SL:\s*([0-9.]+)/i);
+        const tpMatch = setup.match(/TP:\s*([0-9.]+)/i);
+        return {
+          strike: strikeMatch ? Number(strikeMatch[1]) : '',
+          type: typeMatch ? typeMatch[1] : '',
+          spot: spotMatch ? Number(spotMatch[1]) : '',
+          sl: slMatch ? Number(slMatch[1]) : '',
+          tp: tpMatch ? Number(tpMatch[1]) : '',
+        };
+      };
+
+      const rows = monthlyTrades.map(t => {
+        const opt = parseOptionDetails(t.setup_logic || '');
+        const pnlVal = computePnl(t);
+        return {
+          'Date': new Date(t.entry_time).toLocaleDateString('en-IN'),
+          'Option Symbol': t.symbol,
+          'Underlying': t.symbol.includes('BANK') ? 'BANK NIFTY' : (t.symbol.includes('SENSEX') ? 'SENSEX' : 'NIFTY 50'),
+          'Option Type': opt.type || (t.symbol.endsWith('CE') ? 'CE' : (t.symbol.endsWith('PE') ? 'PE' : 'CE/PE')),
+          'Strike Price': opt.strike,
+          'Entry Premium (Price)': Number(t.entry_price),
+          'Exit Premium (Price)': Number(t.exit_price) || '',
+          'Quantity': t.quantity,
+          'Stop Loss Premium': opt.sl,
+          'Take Profit Premium': opt.tp,
+          'Net P&L (INR)': pnlVal.toFixed(2),
+          'Outcome': pnlVal >= 0 ? 'PROFIT' : 'LOSS',
+          'Underlying Spot': opt.spot,
+          'Entry Time': t.entry_time,
+          'Exit Time': t.exit_time || '',
+        };
+      });
+
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Indian Option Trades');
+    } else {
+      const rows = monthlyTrades.map(t => {
+        const pnlVal = computePnl(t);
+        return {
+          'Date': new Date(t.entry_time).toLocaleDateString('en-IN'),
+          'Pair / Asset': t.symbol,
+          'Position Type': t.direction === 'BUY' ? 'LONG' : 'SHORT',
+          'Entry Price': Number(t.entry_price),
+          'Exit Price': Number(t.exit_price) || '',
+          'Quantity (Units)': t.quantity,
+          'Net P&L (USD)': pnlVal.toFixed(2),
+          'Outcome': pnlVal >= 0 ? 'PROFIT' : 'LOSS',
+          'Setup Trigger': (t.setup_logic || '').slice(0, 100),
+          'Entry Time': t.entry_time,
+          'Exit Time': t.exit_time || '',
+        };
+      });
+
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Forex Trades');
+    }
+
+    const monthStr = now.toLocaleString('en-IN', { year: 'numeric', month: 'short' }).replace(' ', '-');
+    XLSX.writeFile(wb, `BIFROST_${marketEnv}_Trades_${monthStr}.xlsx`);
+  };
+
+  // ── Performance Metrics Excel Download ──────────────────────────────────────
+  const downloadPerformanceMetricsExcel = () => {
+    const wb = XLSX.utils.book_new();
+    const assetTrades = trades.filter(t => isAssetMatch(selectedAsset, t.symbol));
+    const closed = assetTrades.filter(t => t.status === 'CLOSED');
+    const wins = closed.filter(t => computePnl(t) > 0);
+    const winRate = closed.length > 0 ? (wins.length / closed.length) * 100 : 0.0;
+    const profitFactor = calculateProfitFactor(assetTrades);
+    const avgStats = calculateAvgWinLoss(assetTrades);
+    const netPnl = closed.reduce((acc, curr) => acc + computePnl(curr), 0);
+    const weeklyReturn = calculatePeriodReturn(assetTrades, 'weekly');
+    const monthlyReturn = calculatePeriodReturn(assetTrades, 'monthly');
+
+    const summaryData = [
+      { 'Metric': 'Target Asset / Ticker', 'Value': selectedAssetLabel + ` (${selectedAsset})` },
+      { 'Metric': 'Market Environment', 'Value': marketEnv },
+      { 'Metric': 'Total Trades Created', 'Value': assetTrades.length },
+      { 'Metric': 'Completed Trades', 'Value': closed.length },
+      { 'Metric': 'Winning Trades', 'Value': wins.length },
+      { 'Metric': 'Losing Trades', 'Value': closed.length - wins.length },
+      { 'Metric': 'Win Ratio', 'Value': winRate.toFixed(2) + '%' },
+      { 'Metric': 'Profit Factor', 'Value': profitFactor.toFixed(2) },
+      { 'Metric': 'Average Win', 'Value': avgStats.avgWin.toFixed(2) },
+      { 'Metric': 'Average Loss', 'Value': avgStats.avgLoss.toFixed(2) },
+      { 'Metric': 'Weekly Net Return', 'Value': weeklyReturn.toFixed(2) },
+      { 'Metric': 'Monthly Net Return', 'Value': monthlyReturn.toFixed(2) },
+      { 'Metric': 'All-Time Net Realized P&L', 'Value': netPnl.toFixed(2) }
+    ];
+
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summaryData), 'KPI Summary');
+
+    const tradeRows = closed.map(t => ({
       'Date': new Date(t.entry_time).toLocaleDateString('en-IN'),
       'Symbol': t.symbol,
       'Direction': t.direction,
-      'Type': t.direction === 'BUY' ? 'LONG' : 'SHORT',
+      'Type': t.direction === 'BUY' ? 'LONG/CE' : 'SHORT/PE',
       'Entry Price': Number(t.entry_price),
       'Exit Price': Number(t.exit_price) || '',
       'Quantity': t.quantity,
       'P&L': computePnl(t).toFixed(2),
       'Outcome': computePnl(t) >= 0 ? 'PROFIT' : 'LOSS',
-      'Setup': (t.setup_logic || '').slice(0, 80),
+      'Setup': t.setup_logic || '',
       'Entry Time': t.entry_time,
-      'Exit Time': t.exit_time || '',
-    });
-
-    const monthlyAll = allClosedTrades.filter(t => new Date(t.entry_time) >= monthStart);
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(monthlyAll.map(toRow)), 'All Trades');
-
-    const indianSymbols = ['NIFTY', 'BANK', 'SENSEX'];
-    const indianTrades = monthlyAll.filter(t => indianSymbols.some(s => t.symbol.toUpperCase().includes(s)));
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(indianTrades.map(toRow)), 'Indian Indices');
-
-    const forexKeywords = ['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'GOLD', 'BTC', 'XAU'];
-    const forexTradesList = monthlyAll.filter(t => forexKeywords.some(s => t.symbol.toUpperCase().includes(s)));
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(forexTradesList.map(toRow)), 'Forex');
-
-    const weekMap: Record<string, { pnl: number; count: number; wins: number }> = {};
-    allClosedTrades.forEach(t => {
-      const d = new Date(t.entry_time);
-      const weekKey = `${d.getFullYear()}-W${String(Math.ceil(d.getDate() / 7)).padStart(2, '0')} (${d.toLocaleString('en-IN', { month: 'short' })})`;
-      if (!weekMap[weekKey]) weekMap[weekKey] = { pnl: 0, count: 0, wins: 0 };
-      const p = computePnl(t);
-      weekMap[weekKey].pnl += p;
-      weekMap[weekKey].count += 1;
-      if (p > 0) weekMap[weekKey].wins += 1;
-    });
-    const summaryRows = Object.entries(weekMap).map(([week, s]) => ({
-      'Period': week,
-      'Trades': s.count,
-      'Wins': s.wins,
-      'Win %': s.count > 0 ? ((s.wins / s.count) * 100).toFixed(1) + '%' : '0%',
-      'Net P&L': s.pnl.toFixed(2),
+      'Exit Time': t.exit_time || ''
     }));
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summaryRows), 'Monthly Summary');
 
-    const monthStr = now.toLocaleString('en-IN', { year: 'numeric', month: 'short' }).replace(' ', '-');
-    XLSX.writeFile(wb, `BIFROST_Trades_${monthStr}.xlsx`);
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(tradeRows), 'Completed Trades');
+
+    XLSX.writeFile(wb, `BIFROST_Performance_${selectedAsset.replace('=X', '')}.xlsx`);
+  };
+
+  // ── Custom Stock Scanner Trigger ──────────────────────────────────────────
+  const runCustomScan = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!customScanTicker.trim()) return;
+    setCustomScanLoading(true);
+    setCustomScanResult(null);
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/scan-asset?ticker=${encodeURIComponent(customScanTicker.trim())}&resolution=15m`);
+      const data = await res.json();
+      setCustomScanResult(data);
+    } catch (err) {
+      console.error(err);
+      setCustomScanResult({ status: 'error', message: 'Scan request failed. Check server connection.' });
+    } finally {
+      setCustomScanLoading(false);
+    }
+  };
+
+  // ── AI Assistant Communication ──────────────────────────────────────────────
+  const sendChatMessage = async (e?: React.FormEvent, customMsg?: string) => {
+    if (e) e.preventDefault();
+    const textToSend = customMsg || chatInput;
+    if (!textToSend.trim()) return;
+
+    const userMsg = { sender: 'user' as const, text: textToSend, timestamp: new Date() };
+    setChatMessages(prev => [...prev, userMsg]);
+    if (!customMsg) setChatInput('');
+    setChatLoading(true);
+
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/ai/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: textToSend,
+          market_env: marketEnv,
+          selected_asset: selectedAsset
+        })
+      });
+      const data = await res.json();
+      
+      const aiMsg = {
+        sender: 'ai' as const,
+        text: data.response || 'Sorry, I encountered an error compiling response.',
+        timestamp: new Date()
+      };
+      setChatMessages(prev => [...prev, aiMsg]);
+      
+      if (data.action_taken === 'SCAN' && data.data?.status === 'success') {
+        setCustomScanTicker(data.data.ticker);
+        setCustomScanResult(data.data);
+      }
+    } catch (err) {
+      console.error(err);
+      setChatMessages(prev => [...prev, {
+        sender: 'ai',
+        text: '❌ Communication failure with BIFROST API server on AWS EC2.',
+        timestamp: new Date()
+      }]);
+    } finally {
+      setChatLoading(false);
+      setTimeout(() => {
+        chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      }, 80);
+    }
   };
 
   // Auth loading state
@@ -1785,9 +1950,18 @@ export default function Dashboard() {
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6 p-2 font-mono text-xs">
                 {/* Left Panel: Win Rate & Profit Factor Summary */}
                 <div className="md:col-span-1 border border-slate-800/80 bg-slate-950/40 rounded-xl p-4 flex flex-col gap-4">
-                  <h3 className="text-slate-400 font-bold tracking-wider border-b border-slate-800/80 pb-2 text-[11px] uppercase">
-                    Key Performance Metrics
-                  </h3>
+                  <div className="flex items-center justify-between border-b border-slate-800/80 pb-2 mb-2 font-mono">
+                    <h3 className="text-slate-400 font-bold tracking-wider text-[11px] uppercase">
+                      Key Performance Metrics
+                    </h3>
+                    <button
+                      onClick={downloadPerformanceMetricsExcel}
+                      className="flex items-center gap-1 border border-emerald-500/30 bg-emerald-500/8 hover:bg-emerald-500/15 text-emerald-400 hover:text-emerald-300 px-2 py-1 rounded text-[9px] font-bold transition-all cursor-pointer"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                      EXPORT
+                    </button>
+                  </div>
                   
                   <div className="grid grid-cols-2 gap-3">
                     <div className="bg-slate-900/50 p-3 rounded-lg border border-slate-850">
@@ -1979,6 +2153,89 @@ export default function Dashboard() {
 
         {/* RIGHT COLUMN: Interactive Ledger (1/3 width) */}
         <div className="flex flex-col gap-4 w-full">
+
+          {/* CUSTOM STOCK SCANNER */}
+          <div className="border border-slate-800 bg-[#070b15]/95 rounded-2xl p-4 shadow-2xl h-fit">
+            <div className="flex items-center justify-between border-b border-slate-800/80 pb-3 mb-4">
+              <div className="flex items-center gap-2">
+                <span className="inline-block h-3 w-3 rounded-full bg-cyan-500" />
+                <h2 className="text-xs font-bold font-mono tracking-widest text-slate-400 uppercase">FAST STOCK SCANNER</h2>
+              </div>
+              <span className="text-[10px] text-slate-500 font-mono">SMC Engine</span>
+            </div>
+
+            <form onSubmit={runCustomScan} className="flex gap-2 mb-4 font-mono">
+              <input
+                type="text"
+                placeholder="e.g. SBIN.NS, TCS.NS, GC=F"
+                value={customScanTicker}
+                onChange={(e) => setCustomScanTicker(e.target.value)}
+                className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs font-bold text-slate-200 focus:outline-none focus:border-cyan-500 placeholder:text-slate-600 transition-colors"
+              />
+              <button
+                type="submit"
+                disabled={customScanLoading}
+                className="bg-cyan-500 hover:bg-cyan-600 text-slate-950 font-bold px-4 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-lg hover:shadow-cyan-500/20 active:scale-95 disabled:opacity-50 cursor-pointer"
+              >
+                {customScanLoading ? (
+                  <div className="h-3.5 w-3.5 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
+                ) : 'SCAN'}
+              </button>
+            </form>
+
+            {customScanResult && (
+              <div className="bg-slate-900/60 p-3 rounded-xl border border-slate-850 font-mono text-[11px] animate-fadeIn">
+                {customScanResult.status === 'success' ? (
+                  <div className="space-y-2">
+                    <div className="flex justify-between items-center pb-1 border-b border-slate-800/50">
+                      <span className="font-bold text-slate-200">{customScanResult.ticker}</span>
+                      <span className="text-[10px] text-slate-500">{customScanResult.timestamp}</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 text-[10px]">
+                      <div>
+                        <span className="text-slate-500 uppercase tracking-wider block">Price</span>
+                        <span className="text-slate-200 font-bold">₹{customScanResult.current_price.toFixed(2)}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500 uppercase tracking-wider block">Trend</span>
+                        <span className={`font-bold ${customScanResult.trend === 'BULLISH' ? 'text-emerald-400' : 'text-rose-400'}`}>{customScanResult.trend}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500 uppercase tracking-wider block">Structure</span>
+                        <span className="text-slate-300 font-semibold">{customScanResult.structure}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500 uppercase tracking-wider block">SMC Signal</span>
+                        <span className={`font-black ${customScanResult.signal === 'BUY' ? 'text-emerald-400' : (customScanResult.signal === 'SELL' ? 'text-rose-400' : 'text-slate-400')}`}>
+                          {customScanResult.signal}
+                        </span>
+                      </div>
+                    </div>
+                    {customScanResult.bullish_fvg !== 'None' && (
+                      <div className="bg-emerald-950/20 p-2 rounded border border-emerald-900/30 text-[10px]">
+                        <span className="text-emerald-400/80 font-bold block mb-0.5">Bullish FVG Zone</span>
+                        <span className="text-emerald-300 font-bold">{customScanResult.bullish_fvg}</span>
+                      </div>
+                    )}
+                    {customScanResult.bearish_fvg !== 'None' && (
+                      <div className="bg-rose-950/20 p-2 rounded border border-rose-900/30 text-[10px]">
+                        <span className="text-rose-400/80 font-bold block mb-0.5">Bearish FVG Zone</span>
+                        <span className="text-rose-300 font-bold">{customScanResult.bearish_fvg}</span>
+                      </div>
+                    )}
+                    <p className="text-[10px] text-slate-400 border-t border-slate-800/40 pt-2 leading-relaxed">
+                      {customScanResult.explanation}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="text-rose-400 text-center py-2 flex items-center justify-center gap-1.5">
+                    <span>⚠️</span>
+                    <span>{customScanResult.message}</span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
           
           {/* ACTIVE TRADES (Current Ledger) - Always visible, fully expanded by default */}
           <div className="border border-slate-800 bg-[#070b15]/95 rounded-2xl p-4 shadow-2xl h-fit">
@@ -2143,7 +2400,7 @@ export default function Dashboard() {
               <div className="flex items-center gap-2">
                 <span className="inline-block h-3 w-3 rounded-full bg-slate-600 transition-colors group-hover:bg-slate-400" />
                 <h2 className="text-xs font-bold font-mono tracking-widest text-slate-400 uppercase group-hover:text-slate-200 transition-colors">
-                  PAST TRADES ({trades.filter(t => t.status === 'CLOSED').length})
+                  PAST TRADES ({trades.filter(t => t.status === 'CLOSED' && isAssetMatch(selectedAsset, t.symbol)).length})
                 </h2>
               </div>
               <div className="flex items-center gap-2 font-mono text-[10px] text-slate-500 group-hover:text-slate-300 transition-colors">
@@ -2293,6 +2550,125 @@ export default function Dashboard() {
 
         </div>
 
+      </div>
+
+      {/* ── Floating AI Assistant Drawer ── */}
+      <div className="fixed bottom-6 right-6 z-50 font-mono">
+        {/* Floating Chat Button */}
+        <button
+          onClick={() => setIsChatOpen(!isChatOpen)}
+          className="relative flex items-center justify-center h-14 w-14 rounded-full bg-gradient-to-tr from-cyan-600 to-indigo-700 hover:from-cyan-500 hover:to-indigo-600 text-white shadow-2xl transition-all hover:scale-105 active:scale-95 cursor-pointer group"
+          title="Open Bifrost AI Assistant"
+        >
+          {isChatOpen ? (
+            <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          ) : (
+            <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          )}
+          <span className="absolute -top-1 -right-1 flex h-3 w-3">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
+            <span className="relative inline-flex rounded-full h-3 w-3 bg-cyan-500"></span>
+          </span>
+        </button>
+
+        {/* Collapsible Chat Window */}
+        {isChatOpen && (
+          <div className="absolute bottom-16 right-0 w-80 md:w-96 h-[480px] border border-slate-800 bg-[#070b15]/95 backdrop-blur-md rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-slideUp">
+            {/* Chat Header */}
+            <div className="p-4 border-b border-slate-800/80 bg-slate-950/40 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+                <span className="text-xs font-bold tracking-wider bg-gradient-to-r from-slate-100 to-cyan-400 bg-clip-text text-transparent">BIFROST // QUANT_AI</span>
+              </div>
+              <span className="text-[9px] text-slate-500 uppercase tracking-widest">Active Terminal</span>
+            </div>
+
+            {/* Suggestions Quick Buttons */}
+            <div className="p-2 border-b border-slate-800/40 bg-slate-900/10 flex gap-1.5 overflow-x-auto scrollbar-none text-[9px] font-bold text-slate-400 shrink-0">
+              <button 
+                onClick={(e) => sendChatMessage(e, "scan RELIANCE")} 
+                className="px-2 py-1 rounded bg-slate-900/60 border border-slate-800/60 hover:text-cyan-400 hover:border-cyan-500/30 transition-all whitespace-nowrap cursor-pointer"
+              >
+                🔍 Scan RELIANCE
+              </button>
+              <button 
+                onClick={(e) => sendChatMessage(e, "show recent trades")} 
+                className="px-2 py-1 rounded bg-slate-900/60 border border-slate-800/60 hover:text-cyan-400 hover:border-cyan-500/30 transition-all whitespace-nowrap cursor-pointer"
+              >
+                📊 Show Trades
+              </button>
+              <button 
+                onClick={(e) => sendChatMessage(e, "check engine status")} 
+                className="px-2 py-1 rounded bg-slate-900/60 border border-slate-800/60 hover:text-cyan-400 hover:border-cyan-500/30 transition-all whitespace-nowrap cursor-pointer"
+              >
+                🔌 Engine Health
+              </button>
+            </div>
+
+            {/* Messages Body */}
+            <div className="flex-1 p-4 overflow-y-auto space-y-4 text-xs scrollbar-thin">
+              {chatMessages.map((msg, i) => (
+                <div key={i} className={`flex flex-col ${msg.sender === 'user' ? 'items-end' : 'items-start'}`}>
+                  <div className={`max-w-[85%] rounded-xl p-3 leading-relaxed ${
+                    msg.sender === 'user' 
+                      ? 'bg-cyan-500/10 text-cyan-200 border border-cyan-500/25 rounded-tr-none' 
+                      : 'bg-slate-900/80 text-slate-350 border border-slate-850/60 rounded-tl-none'
+                  }`}>
+                    {msg.text.split('\n').map((line, idx) => {
+                      if (line.startsWith('### ')) {
+                        return <h4 key={idx} className="font-bold text-slate-200 mb-1.5 border-b border-slate-800/50 pb-0.5">{line.replace('### ', '')}</h4>;
+                      }
+                      if (line.startsWith('* ')) {
+                        return <div key={idx} className="pl-3 relative before:content-['•'] before:absolute before:left-0 before:text-cyan-400 mb-1">{line.replace('* ', '')}</div>;
+                      }
+                      let processed = line;
+                      if (processed.includes('**')) {
+                        const parts = processed.split('**');
+                        return (
+                          <div key={idx} className="mb-0.5">
+                            {parts.map((p, pIdx) => pIdx % 2 === 1 ? <strong key={pIdx} className="text-cyan-400 font-bold">{p}</strong> : p)}
+                          </div>
+                        );
+                      }
+                      return <p key={idx} className="mb-0.5">{processed}</p>;
+                    })}
+                  </div>
+                  <span className="text-[8px] text-slate-500 mt-1 uppercase tracking-wider">
+                    {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}
+                  </span>
+                </div>
+              ))}
+              {chatLoading && (
+                <div className="flex flex-col items-start animate-pulse">
+                  <div className="bg-slate-900/80 border border-slate-850/60 rounded-xl rounded-tl-none p-3 flex items-center gap-1.5">
+                    <span className="h-1.5 w-1.5 bg-cyan-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                    <span className="h-1.5 w-1.5 bg-cyan-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                    <span className="h-1.5 w-1.5 bg-cyan-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                  </div>
+                </div>
+              )}
+              <div ref={chatEndRef} />
+            </div>
+
+            {/* Input Form */}
+            <form onSubmit={sendChatMessage} className="p-3 border-t border-slate-800/80 bg-slate-950/40 flex gap-2 shrink-0">
+              <input
+                type="text"
+                placeholder="Ask Bifrost AI..."
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-cyan-500 placeholder:text-slate-600 transition-colors font-bold"
+              />
+              <button
+                type="submit"
+                disabled={chatLoading}
+                className="bg-cyan-500 hover:bg-cyan-600 disabled:opacity-50 text-slate-950 font-black px-4 py-2 rounded-xl text-xs transition-all active:scale-95 cursor-pointer font-bold"
+              >
+                SEND
+              </button>
+            </form>
+          </div>
+        )}
       </div>
     </div>
   );
