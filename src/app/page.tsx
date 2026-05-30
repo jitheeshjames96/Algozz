@@ -317,25 +317,31 @@ const isAssetMatch = (assetVal: string, symbol: string) => {
     if (mapped.some(m => m.toUpperCase() === upperSymbol)) return true;
   }
   
+  const clean = (s: string) => s.replace(/\.(NS|BO)$/i, '').replace(/^(NSE:|BSE:|MCX:|CDS:)/, '').toUpperCase();
+  const cleanSymbol = clean(symbol);
+  
   // Custom prefix/partial match logic for indices:
   if (assetVal === '^NSEI') {
     // If the symbol starts with "NIFTY" and doesn't contain "BANK", it's Nifty
-    if (upperSymbol.startsWith('NIFTY') && !upperSymbol.includes('BANK')) return true;
+    if (cleanSymbol.startsWith('NIFTY') && !cleanSymbol.includes('BANK')) return true;
   }
   if (assetVal === '^NSEBANK') {
     // If the symbol starts with "BANK" or contains "BANKNIFTY" or "BANK NIFTY", it's Bank Nifty
-    if (upperSymbol.startsWith('BANK') || upperSymbol.includes('BANKNIFTY') || upperSymbol.includes('BANK NIFTY')) return true;
+    if (cleanSymbol.startsWith('BANK') || cleanSymbol.includes('BANKNIFTY') || cleanSymbol.includes('BANK NIFTY')) return true;
+  }
+  if (assetVal === '^BSESN') {
+    // If the symbol contains "SENSEX", it's Sensex
+    if (cleanSymbol.includes('SENSEX')) return true;
   }
   
   // Reverse map: if symbol is in any map value, check if assetVal matches the key
   for (const [key, vals] of Object.entries(SYMBOL_MAP)) {
-    if (vals.some(v => v.toUpperCase() === upperSymbol)) {
+    if (vals.some(v => clean(v) === cleanSymbol)) {
       return key === assetVal;
     }
   }
   // Fallback: strip exchange prefixes and compare
-  const clean = (s: string) => s.replace(/\.(NS|BO)$/i, '').replace(/^(NSE:|BSE:|MCX:|CDS:)/, '').toUpperCase();
-  return clean(assetVal) === clean(symbol) || assetVal === symbol;
+  return clean(assetVal) === cleanSymbol || assetVal === symbol;
 };
 
 // NSE Trading Holidays 2026 (format: 'YYYY-MM-DD')
