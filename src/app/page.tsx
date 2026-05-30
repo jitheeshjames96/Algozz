@@ -644,11 +644,27 @@ export default function Dashboard() {
   useEffect(() => {
     const initAuth = async () => {
       console.log("🔍 [BIFROST AUTH] initAuth started");
+      
+      // Safety 3-second timeout to prevent indefinite locks or storage deadlocks
+      const timeoutPromise = new Promise<{ data: { session: null }; timeout: boolean }>((resolve) => {
+        setTimeout(() => resolve({ data: { session: null }, timeout: true }), 3000);
+      });
+
       try {
-        console.log("🔍 [BIFROST AUTH] calling getSession");
-        const { data: { session } } = await supabase.auth.getSession();
-        console.log("🔍 [BIFROST AUTH] getSession completed. Session present:", !!session);
-        setUser(session?.user ?? null);
+        console.log("🔍 [BIFROST AUTH] calling getSession with 3s timeout race");
+        const result = await Promise.race([
+          supabase.auth.getSession().then(res => ({ ...res, timeout: false })),
+          timeoutPromise
+        ]);
+
+        if (result.timeout) {
+          console.warn("🔍 [BIFROST AUTH] getSession timed out. Falling back to unauthenticated.");
+          setUser(null);
+        } else {
+          const session = result.data?.session;
+          console.log("🔍 [BIFROST AUTH] getSession resolved. Session present:", !!session);
+          setUser(session?.user ?? null);
+        }
       } catch (err) {
         console.error("🔍 [BIFROST AUTH] getSession failed with error:", err);
         setUser(null);
@@ -667,28 +683,32 @@ export default function Dashboard() {
 
     let authSubscription: any = null;
     try {
-      console.log("🔍 [BIFROST AUTH] setting up onAuthStateChange listener");
-      const { data } = supabase.auth.onAuthStateChange(async (event, session) => {
+      console.log("🔍 [BIFROST AUTH] setting up onAuthStateChange listener (non-async event handler to prevent deadlocks)");
+      const { data } = supabase.auth.onAuthStateChange((event, session) => {
         console.log(`🔍 [BIFROST AUTH] onAuthStateChange event: ${event}, user: ${session?.user?.email || 'none'}`);
         setUser(session?.user ?? null);
+        
         if (event === 'SIGNED_IN' && session?.user) {
-          try {
-            console.log("🔍 [BIFROST AUTH] logged in. Attempting access log update...");
-            const { error: logErr } = await supabase.from('access_logs').insert({
-              email: session.user.email,
-              user_id: session.user.id,
-              accessed_at: new Date().toISOString(),
-              user_agent: typeof navigator !== 'undefined' ? navigator.userAgent : 'unknown',
-              provider: session.user.app_metadata?.provider || 'google',
-            });
-            if (logErr) {
-              console.warn("🔍 [BIFROST AUTH] access log insert warning:", logErr);
-            } else {
-              console.log("🔍 [BIFROST AUTH] access log successfully recorded.");
+          // Offload async db call to the next tick of the event loop to prevent lock contention
+          setTimeout(async () => {
+            console.log("🔍 [BIFROST AUTH] logged in. Offloaded access log update running...");
+            try {
+              const { error: logErr } = await supabase.from('access_logs').insert({
+                email: session.user.email,
+                user_id: session.user.id,
+                accessed_at: new Date().toISOString(),
+                user_agent: typeof navigator !== 'undefined' ? navigator.userAgent : 'unknown',
+                provider: session.user.app_metadata?.provider || 'google',
+              });
+              if (logErr) {
+                console.warn("🔍 [BIFROST AUTH] access log insert warning:", logErr);
+              } else {
+                console.log("🔍 [BIFROST AUTH] access log successfully recorded.");
+              }
+            } catch (insertErr) {
+              console.warn("🔍 [BIFROST AUTH] access log catch warning:", insertErr);
             }
-          } catch (insertErr) {
-            console.warn("🔍 [BIFROST AUTH] access log catch warning:", insertErr);
-          }
+          }, 0);
         }
       });
       authSubscription = data?.subscription;
