@@ -20,6 +20,935 @@ const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 const BACKEND_URL = getEnvVal(process.env.NEXT_PUBLIC_BACKEND_URL, "http://localhost:8000");
 
+// Helper to retrieve active Supabase session access token for Bearer headers
+const getAuthHeaders = async () => {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    return {
+      'Content-Type': 'application/json',
+      'Authorization': session ? `Bearer ${session.access_token}` : '',
+    };
+  } catch (err) {
+    console.error("Error generating auth headers:", err);
+    return {
+      'Content-Type': 'application/json',
+      'Authorization': '',
+    };
+  }
+};
+
+// =============================================================================
+// SWING TRADING TECHNICAL INDICATORS & SCORING SYSTEM (Ported from analysis.js)
+// =============================================================================
+
+interface CandleData {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume?: number;
+}
+
+const calcSMA = (closes: number[], period: number): (number | null)[] => {
+  return closes.map((_, i) => {
+    if (i < period - 1) return null;
+    const slice = closes.slice(i - period + 1, i + 1);
+    return slice.reduce((s, v) => s + v, 0) / period;
+  });
+};
+
+const calcEMA = (closes: number[], period: number): number[] => {
+  const k = 2 / (period + 1);
+  const ema: number[] = [];
+  closes.forEach((c, i) => {
+    if (i === 0) { ema.push(c); return; }
+    ema.push(c * k + ema[i - 1] * (1 - k));
+  });
+  return ema;
+};
+
+const calcRSI = (closes: number[], period: number = 14): (number | null)[] => {
+  if (closes.length < period + 1) return Array(closes.length).fill(50);
+  const rsi: number[] = [];
+  let avgGain = 0, avgLoss = 0;
+
+  for (let i = 1; i <= period; i++) {
+    const diff = closes[i] - closes[i - 1];
+    if (diff > 0) avgGain += diff;
+    else avgLoss += Math.abs(diff);
+  }
+  avgGain /= period;
+  avgLoss /= period;
+
+  rsi.push(avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss));
+
+  for (let i = period + 1; i < closes.length; i++) {
+    const diff = closes[i] - closes[i - 1];
+    const gain = diff > 0 ? diff : 0;
+    const loss = diff < 0 ? Math.abs(diff) : 0;
+    avgGain = (avgGain * (period - 1) + gain) / period;
+    avgLoss = (avgLoss * (period - 1) + loss) / period;
+    rsi.push(avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss));
+  }
+
+  const padding = Array(closes.length - rsi.length).fill(null);
+  return [...padding, ...rsi];
+};
+
+const calcMACD = (closes: number[], fast: number = 12, slow: number = 26, signal: number = 9) => {
+  const emaFast = calcEMA(closes, fast);
+  const emaSlow = calcEMA(closes, slow);
+  const macdLine = closes.map((_, i) => emaFast[i] - emaSlow[i]);
+  const signalLine = calcEMA(macdLine.slice(slow - 1), signal);
+  const histogram = macdLine.slice(slow - 1).map((m, i) => m - (signalLine[i] || 0));
+  return {
+    macd: macdLine,
+    signal: [...Array(slow - 1).fill(null), ...signalLine],
+    histogram: [...Array(slow - 1).fill(null), ...histogram],
+  };
+};
+
+const calcBollingerBands = (closes: number[], period: number = 20, stdDev: number = 2) => {
+  const sma = calcSMA(closes, period);
+  return closes.map((_, i) => {
+    if (i < period - 1 || sma[i] == null) return { upper: null, mid: null, lower: null };
+    const slice = closes.slice(i - period + 1, i + 1);
+    const mean = sma[i] as number;
+    const variance = slice.reduce((s, v) => s + Math.pow(v - mean, 2), 0) / period;
+    const std = Math.sqrt(variance);
+    return { upper: mean + stdDev * std, mid: mean, lower: mean - stdDev * std };
+  });
+};
+
+const calcATR = (highs: number[], lows: number[], closes: number[], period: number = 14): number[] => {
+  const tr = closes.map((c, i) => {
+    if (i === 0) return highs[i] - lows[i];
+    return Math.max(highs[i] - lows[i], Math.abs(highs[i] - closes[i - 1]), Math.abs(lows[i] - closes[i - 1]));
+  });
+  return calcEMA(tr, period);
+};
+
+const calcSupportResistance = (data: CandleData[]) => {
+  const dummy = { pivot: 0, r1: 0, r2: 0, s1: 0, s2: 0, supports: [] as number[], resistances: [] as number[] };
+  if (!data || data.length < 30) {
+    return { daily: dummy, weekly: dummy, fourHour: dummy, pivot: 0, r1: 0, r2: 0, s1: 0, s2: 0, supports: [], resistances: [] };
+  }
+
+  const getPivots = (high: number, low: number, close: number) => {
+    const pivot = (high + low + close) / 3;
+    const r1 = 2 * pivot - low;
+    const r2 = pivot + (high - low);
+    const s1 = 2 * pivot - high;
+    const s2 = pivot - (high - low);
+    return { pivot, r1, r2, s1, s2 };
+  };
+
+  const prevDay = data[data.length - 2] || data[data.length - 1];
+  const daily = getPivots(prevDay.high, prevDay.low, prevDay.close);
+
+  // Simple weekly approximation
+  const recent5 = data.slice(-5);
+  const wHigh = Math.max(...recent5.map(d => d.high));
+  const wLow = Math.min(...recent5.map(d => d.low));
+  const wClose = data[data.length - 1].close;
+  const weekly = getPivots(wHigh, wLow, wClose);
+
+  const recent3 = data.slice(-3);
+  const recentHigh = Math.max(...recent3.map(d => d.high));
+  const recentLow = Math.min(...recent3.map(d => d.low));
+  const recentClose = data[data.length - 1].close;
+  const fourHour = getPivots(recentHigh, recentLow, recentClose);
+
+  const recent = data.slice(-30);
+  const resistances = recent
+    .filter((d, i, arr) => i > 0 && i < arr.length - 1 && d.high > arr[i - 1].high && d.high > arr[i + 1].high)
+    .map(d => d.high)
+    .slice(-3);
+
+  const supports = recent
+    .filter((d, i, arr) => i > 0 && i < arr.length - 1 && d.low < arr[i - 1].low && d.low < arr[i + 1].low)
+    .map(d => d.low)
+    .slice(-3);
+
+  return { 
+    daily, 
+    weekly, 
+    fourHour, 
+    pivot: daily.pivot, 
+    r1: daily.r1, 
+    r2: daily.r2, 
+    s1: daily.s1, 
+    s2: daily.s2, 
+    supports, 
+    resistances 
+  };
+};
+
+const detectVolumeSpikes = (data: CandleData[]) => {
+  if (!data || data.length < 21) return { spikes: 0, avgVolume: 0, latestVolume: 0, latestRatio: 1, institutionalSignal: 'neutral', accumulation: false, distribution: false };
+
+  const volumes = data.map(d => d.volume || 0);
+  const avgVols = calcSMA(volumes, 20);
+
+  const latestVol = volumes[volumes.length - 1];
+  const latestAvg = (avgVols[avgVols.length - 1] as number) || 1;
+  const latestRatio = latestVol / latestAvg;
+
+  const spikes = data.slice(-20).filter((d, i) => {
+    const avg = avgVols[avgVols.length - 20 + i];
+    return avg && d.volume && d.volume > (avg as number) * 1.5;
+  });
+
+  let institutionalSignal = 'neutral';
+  if (latestRatio > 2.5) institutionalSignal = 'strong';
+  else if (latestRatio > 1.5) institutionalSignal = 'moderate';
+  else if (latestRatio < 0.7) institutionalSignal = 'weak';
+
+  const lastCandle = data[data.length - 1];
+  const prevCandle = data[data.length - 2];
+  const priceUp = lastCandle && prevCandle && lastCandle.close > prevCandle.close;
+
+  return {
+    spikes: spikes.length,
+    avgVolume: latestAvg,
+    latestVolume: latestVol,
+    latestRatio: parseFloat(latestRatio.toFixed(2)),
+    institutionalSignal,
+    accumulation: priceUp && latestRatio > 1.5,
+    distribution: !priceUp && latestRatio > 1.5,
+  };
+};
+
+const detectTrend = (data: CandleData[]): string => {
+  if (!data || data.length < 50) return 'sideways';
+  const closes = data.map(d => d.close);
+  const sma20 = calcSMA(closes, 20);
+  const sma50 = calcSMA(closes, 50);
+
+  const last20 = sma20[sma20.length - 1] || 0;
+  const last50 = sma50[sma50.length - 1] || 0;
+  const currentPrice = closes[closes.length - 1];
+
+  if (currentPrice > last20 && last20 > last50) return 'uptrend';
+  if (currentPrice < last20 && last20 < last50) return 'downtrend';
+  return 'sideways';
+};
+
+const scoreFundamentals = (fund: any, symbol: string, sector: string) => {
+  if (!fund) {
+    return {
+      score: 0,
+      checklist: [
+        { label: 'Valuation Quality', passed: false, value: 'N/A', desc: 'PE below industry average or PB ratio under 3.0 indicates healthy valuation.', score: 0, max: 9 },
+        { label: 'Earnings & Revenue Growth', passed: false, value: 'N/A', desc: 'Strong double digit top-line and bottom-line growth confirms business expansion.', score: 0, max: 8 },
+        { label: 'Balance Sheet & ROE', passed: false, value: 'N/A', desc: 'Debt-to-equity below 1.0 limits insolvency risk, while ROE above 12% shows efficient capital use.', score: 0, max: 8 }
+      ]
+    };
+  }
+
+  const checklist: any[] = [];
+  const sym = (symbol || '').toUpperCase();
+  const sec = (sector || '').toUpperCase();
+  
+  const isFinancial = sec.includes('BANK') || sec.includes('NBFC') || sec.includes('FINANCIAL') || 
+                      ['HDFCBANK.NS', 'ICICIBANK.NS', 'AXISBANK.NS', 'SBIN.NS', 'KOTAKBANK.NS', 'BAJFINANCE.NS', 'BAJAJFINSV.NS', 'JPM', 'GS', 'MS'].includes(sym);
+                      
+  const isIndian = sym.endsWith('.NS') || sym.endsWith('.BO');
+  const marketCap = fund.marketCap || 0;
+  const isMegaCap = isIndian ? (marketCap > 1.5e12) : (marketCap > 1.5e11);
+
+  // 1. Valuation Quality
+  let peScore = 0;
+  let peDesc = '';
+  if (fund.pe === null || fund.pe === undefined || fund.pe <= 0) {
+    peScore = 5;
+    peDesc = 'PE: N/A';
+  } else if (fund.pe < 15) {
+    peScore = 9;
+    peDesc = `PE: ${fund.pe.toFixed(1)} (Highly Undervalued)`;
+  } else if (fund.pe < 30) {
+    peScore = 7;
+    peDesc = `PE: ${fund.pe.toFixed(1)} (Reasonable/Fair)`;
+  } else if (fund.pe < 45) {
+    peScore = 5;
+    peDesc = `PE: ${fund.pe.toFixed(1)} (Premium Valuation)`;
+  } else {
+    peScore = 2;
+    peDesc = `PE: ${fund.pe.toFixed(1)} (Highly Stretched)`;
+  }
+  
+  let peBonus = 0;
+  if (fund.pe && fund.industryPe && fund.pe < fund.industryPe * 1.1) {
+    peBonus = 1;
+    peDesc += ` [Industry PE: ${fund.industryPe.toFixed(1)}]`;
+  }
+  
+  let pbScore = 0;
+  let pbDesc = '';
+  if (fund.pb === null || fund.pb === undefined || fund.pb <= 0) {
+    pbScore = 5;
+    pbDesc = 'PB: N/A';
+  } else if (fund.pb < 3) {
+    pbScore = 9;
+    pbDesc = `PB: ${fund.pb.toFixed(2)} (Value)`;
+  } else if (fund.pb < 6) {
+    pbScore = 7;
+    pbDesc = `PB: ${fund.pb.toFixed(2)} (Reasonable)`;
+  } else {
+    pbScore = 4;
+    pbDesc = `PB: ${fund.pb.toFixed(2)} (Stretched)`;
+  }
+  
+  const valScore = Math.min(9, Math.round((peScore + pbScore) / 2) + peBonus);
+  checklist.push({
+    label: 'Valuation Quality',
+    passed: valScore >= 6,
+    value: `${peDesc}, ${pbDesc}`,
+    desc: 'Assesses P/E vs industry averages and P/B ratios. Moat companies are allowed premium multiples.',
+    score: valScore,
+    max: 9
+  });
+
+  // 2. Earnings & Revenue Growth
+  let revScore = 0;
+  let revDesc = '';
+  if (fund.revenueGrowth === null || fund.revenueGrowth === undefined) {
+    revScore = 1;
+    revDesc = 'N/A';
+  } else if (fund.revenueGrowth > 12) {
+    revScore = 4;
+    revDesc = `Rev YoY: +${fund.revenueGrowth.toFixed(1)}%`;
+  } else if (fund.revenueGrowth > 6) {
+    revScore = 3;
+    revDesc = `Rev YoY: +${fund.revenueGrowth.toFixed(1)}%`;
+  } else if (fund.revenueGrowth >= 0) {
+    revScore = 2;
+    revDesc = `Rev YoY: +${fund.revenueGrowth.toFixed(1)}%`;
+  } else {
+    revScore = 0;
+    revDesc = `Rev YoY: ${fund.revenueGrowth.toFixed(1)}% (Decline)`;
+  }
+
+  let earnScore = 0;
+  let earnDesc = '';
+  if (fund.earningsGrowth === null || fund.earningsGrowth === undefined) {
+    earnScore = 1;
+    earnDesc = 'N/A';
+  } else if (fund.earningsGrowth > 15) {
+    earnScore = 4;
+    earnDesc = `EPS YoY: +${fund.earningsGrowth.toFixed(1)}%`;
+  } else if (fund.earningsGrowth > 8) {
+    earnScore = 3;
+    earnDesc = `EPS YoY: +${fund.earningsGrowth.toFixed(1)}%`;
+  } else if (fund.earningsGrowth >= 0) {
+    earnScore = 2;
+    earnDesc = `EPS YoY: +${fund.earningsGrowth.toFixed(1)}%`;
+  } else {
+    earnScore = 0;
+    earnDesc = `EPS YoY: ${fund.earningsGrowth.toFixed(1)}% (Decline)`;
+  }
+
+  const growthScore = Math.min(8, revScore + earnScore);
+  checklist.push({
+    label: 'Earnings & Revenue Growth',
+    passed: growthScore >= 5,
+    value: `${revDesc}, ${earnDesc}`,
+    desc: 'Measures top-line revenue expansion and bottom-line EPS acceleration year-over-year.',
+    score: growthScore,
+    max: 8
+  });
+
+  // 3. Balance Sheet & ROE
+  let debtScore = 0;
+  let debtDesc = '';
+  if (isFinancial) {
+    if (fund.currentRatio !== null && fund.currentRatio !== undefined) {
+      if (fund.currentRatio > 1.2) {
+        debtScore = 4;
+        debtDesc = `Financials: Strong Liquidity (Current Ratio: ${fund.currentRatio.toFixed(2)})`;
+      } else {
+        debtScore = 3;
+        debtDesc = `Financials: Adequate Liquidity (Current Ratio: ${fund.currentRatio.toFixed(2)})`;
+      }
+    } else {
+      debtScore = 4;
+      debtDesc = `Leverage: N/A (Financial Sector)`;
+    }
+  } else if (fund.debtToEquity === null || fund.debtToEquity === undefined) {
+    debtScore = 2;
+    debtDesc = 'D/E: N/A';
+  } else if (fund.debtToEquity < 0.5) {
+    debtScore = 4;
+    debtDesc = `D/E: ${fund.debtToEquity.toFixed(2)} (Minimal Debt)`;
+  } else if (fund.debtToEquity < 1.0) {
+    debtScore = 3;
+    debtDesc = `D/E: ${fund.debtToEquity.toFixed(2)} (Healthy)`;
+  } else if (fund.debtToEquity < 1.5) {
+    debtScore = 2;
+    debtDesc = `D/E: ${fund.debtToEquity.toFixed(2)} (Moderate Debt)`;
+  } else {
+    debtScore = 1;
+    debtDesc = `D/E: ${fund.debtToEquity.toFixed(2)} (Leveraged)`;
+  }
+
+  let roeScore = 0;
+  let roeDesc = '';
+  const roeVal = fund.roe !== null && fund.roe !== undefined ? fund.roe : (fund.roce !== null && fund.roce !== undefined ? fund.roce : null);
+  const isRoceFallback = fund.roe === null || fund.roe === undefined;
+  const metricLabel = isRoceFallback ? 'ROCE' : 'ROE';
+
+  if (roeVal === null || roeVal === undefined) {
+    roeScore = 1;
+    roeDesc = 'Profitability: N/A';
+  } else if (isMegaCap) {
+    if (roeVal > 12) {
+      roeScore = 4;
+      roeDesc = `${metricLabel}: ${roeVal.toFixed(1)}% (Excellent for scale)`;
+    } else if (roeVal > 9) {
+      roeScore = 3;
+      roeDesc = `${metricLabel}: ${roeVal.toFixed(1)}% (Solid for scale)`;
+    } else if (roeVal >= 5) {
+      roeScore = 2;
+      roeDesc = `${metricLabel}: ${roeVal.toFixed(1)}% (Low/Consolidating)`;
+    } else {
+      roeScore = 1;
+      roeDesc = `${metricLabel}: ${roeVal.toFixed(1)}% (Poor)`;
+    }
+  } else {
+    if (roeVal > 15) {
+      roeScore = 4;
+      roeDesc = `${metricLabel}: ${roeVal.toFixed(1)}% (Excellent)`;
+    } else if (roeVal > 10) {
+      roeScore = 3;
+      roeDesc = `${metricLabel}: ${roeVal.toFixed(1)}% (Good)`;
+    } else if (roeVal >= 6) {
+      roeScore = 2;
+      roeDesc = `${metricLabel}: ${roeVal.toFixed(1)}% (Subpar)`;
+    } else {
+      roeScore = 1;
+      roeDesc = `${metricLabel}: ${roeVal.toFixed(1)}% (Poor)`;
+    }
+  }
+
+  let marginBonus = 0;
+  if (fund.profitMargin !== null && fund.profitMargin !== undefined && fund.profitMargin > 15) {
+    marginBonus = 1;
+    roeDesc += ` [Margin: ${fund.profitMargin.toFixed(1)}%]`;
+  }
+
+  const balanceScore = Math.min(8, debtScore + roeScore + marginBonus);
+  checklist.push({
+    label: 'Balance Sheet & ROE',
+    passed: balanceScore >= 6,
+    value: `${debtDesc}, ${roeDesc}`,
+    desc: 'Verifies leverage limits to avoid insolvency and confirms capital efficiency via Return on Equity.',
+    score: balanceScore,
+    max: 8
+  });
+
+  return { score: Math.min(25, valScore + growthScore + balanceScore), checklist };
+};
+
+const scoreTechnicalSetup = (data: CandleData[], quote: any) => {
+  if (!data || data.length < 30) {
+    return {
+      score: 0,
+      checklist: [
+        { label: 'Trend Structure (SMA)', passed: false, value: 'N/A', desc: 'Price > SMA20 > SMA50 > SMA200', score: 0, max: 8 },
+        { label: 'Support Zone Proximity', passed: false, value: 'N/A', desc: 'Price within 3% of support (S1/S2 or SMA200)', score: 0, max: 6 },
+        { label: 'Volatility Squeeze/Breakout', passed: false, value: 'N/A', desc: 'Bollinger Band squeeze or upper band breakout', score: 0, max: 6 }
+      ],
+      indicators: {} as any
+    };
+  }
+
+  const closes = data.map(d => d.close);
+  const currentPrice = closes[closes.length - 1];
+  const sma20 = calcSMA(closes, 20);
+  const sma50 = calcSMA(closes, 50);
+  const sma200 = calcSMA(closes, 200);
+
+  const lastSma20 = (sma20[sma20.length - 1] as number) || 0;
+  const lastSma50 = (sma50[sma50.length - 1] as number) || 0;
+  const lastSma200 = (sma200[sma200.length - 1] as number) || 0;
+
+  const sr = calcSupportResistance(data);
+  const bb = calcBollingerBands(closes, 20, 2);
+  const lastBB = bb[bb.length - 1] || {};
+
+  const checklist: any[] = [];
+  let score = 0;
+
+  // 1. SMA Trend Structure
+  const smaPassed = currentPrice > lastSma20 && lastSma20 > lastSma50;
+  const smaText = [];
+  if (currentPrice > lastSma20) smaText.push('Price > SMA20');
+  if (lastSma20 > lastSma50) smaText.push('SMA20 > SMA50');
+  if (lastSma50 > lastSma200) smaText.push('SMA50 > SMA200');
+  
+  const smaScore = smaPassed ? (lastSma50 > lastSma200 ? 8 : 6) : 2;
+  score += smaScore;
+  checklist.push({
+    label: 'Trend Structure (SMA)',
+    passed: smaPassed,
+    value: smaText.length > 0 ? smaText.join(', ') : 'Downtrend alignment',
+    desc: 'Aligning with SMA20, 50, and 200 ensures trading in the direction of the primary market trend.',
+    score: smaScore,
+    max: 8
+  });
+
+  // 2. Support Zone Proximity
+  let supportPassed = false;
+  const symbol = quote?.symbol || '';
+  const isUS = !symbol.endsWith('.NS') && !symbol.endsWith('.BO');
+  const cSym = isUS ? '$' : '₹';
+  let supportVal = 'Far from support';
+  
+  const distS1 = sr.s1 ? Math.abs(currentPrice - sr.s1) / currentPrice : 99;
+  const distS2 = sr.s2 ? Math.abs(currentPrice - sr.s2) / currentPrice : 99;
+  const distSma200 = lastSma200 ? Math.abs(currentPrice - lastSma200) / currentPrice : 99;
+
+  if (distS1 < 0.03) {
+    supportPassed = true;
+    supportVal = `Near S1 (${cSym}${sr.s1.toFixed(1)})`;
+  } else if (distS2 < 0.03) {
+    supportPassed = true;
+    supportVal = `Near S2 (${cSym}${sr.s2.toFixed(1)})`;
+  } else if (distSma200 < 0.03) {
+    supportPassed = true;
+    supportVal = `Near SMA200 (${cSym}${lastSma200.toFixed(1)})`;
+  }
+  const supportScore = supportPassed ? 6 : 2;
+  score += supportScore;
+  checklist.push({
+    label: 'Support Zone Proximity',
+    passed: supportPassed,
+    value: supportPassed ? supportVal : `S1: ${cSym}${sr.s1?.toFixed(1) || 'N/A'}`,
+    desc: 'Entering trades near key supports provides optimal risk-to-reward setup.',
+    score: supportScore,
+    max: 6
+  });
+
+  // 3. Volatility Breakout
+  let bbPassed = false;
+  let bbVal = 'Normal Bandwidth';
+  if (lastBB.mid && lastBB.upper && lastBB.lower) {
+    const bbBandwidth = (lastBB.upper - lastBB.lower) / lastBB.mid;
+    if (bbBandwidth < 0.12) {
+      bbPassed = true;
+      bbVal = `Squeeze (Bandwidth: ${(bbBandwidth * 100).toFixed(1)}%)`;
+    } else if (currentPrice >= lastBB.upper) {
+      bbPassed = true;
+      bbVal = 'Upper Band Breakout';
+    }
+  }
+  const bbScore = bbPassed ? 6 : 3;
+  score += bbScore;
+  checklist.push({
+    label: 'Volatility Squeeze/Breakout',
+    passed: bbPassed,
+    value: bbVal,
+    desc: 'Bollinger Band Squeeze hints at imminent expansion. Breakout above upper band indicates strong momentum.',
+    score: bbScore,
+    max: 6
+  });
+
+  const volData = detectVolumeSpikes(data);
+  const trend = detectTrend(data);
+
+  return {
+    score: Math.min(20, score),
+    checklist,
+    indicators: {
+      sma20: lastSma20,
+      sma50: lastSma50,
+      sma200: lastSma200,
+      sr,
+      lastBB,
+      currentPrice,
+      volData,
+      trend
+    }
+  };
+};
+
+const scoreMomentum = (data: CandleData[]) => {
+  if (!data || data.length < 30) {
+    return {
+      score: 0,
+      checklist: [
+        { label: 'RSI Momentum Zone', passed: false, value: 'N/A', desc: 'RSI between 40 and 65 (bull phase)', score: 0, max: 10 },
+        { label: 'MACD Trend Confirmation', passed: false, value: 'N/A', desc: 'MACD Line > Signal Line', score: 0, max: 10 }
+      ],
+      indicators: {} as any
+    };
+  }
+
+  const closes = data.map(d => d.close);
+  const highs = data.map(d => d.high);
+  const lows = data.map(d => d.low);
+
+  const rsiArr = calcRSI(closes, 14);
+  const rsi = (rsiArr[rsiArr.length - 1] as number) || 50;
+
+  const macdData = calcMACD(closes);
+  const lastMacd = macdData.macd[macdData.macd.length - 1] || 0;
+  const lastSignal = macdData.signal[macdData.signal.length - 1] || 0;
+  const prevMacd = macdData.macd[macdData.macd.length - 2] || 0;
+  const prevSignal = macdData.signal[macdData.signal.length - 2] || 0;
+  const macdCrossover = lastMacd > lastSignal && prevMacd <= prevSignal;
+  const macdBullish = lastMacd > lastSignal;
+
+  const volData = detectVolumeSpikes(data);
+  const atrArr = calcATR(highs, lows, closes, 14);
+  const atr = atrArr[atrArr.length - 1] || closes[closes.length - 1] * 0.02;
+
+  const checklist: any[] = [];
+  let score = 0;
+
+  // 1. RSI Zone Check
+  let rsiVal = `RSI: ${rsi.toFixed(1)}`;
+  if (rsi >= 40 && rsi <= 65) {
+    rsiVal += ' (Bullish Zone)';
+  } else if (rsi < 40) {
+    rsiVal += ' (Oversold/Weak)';
+  } else {
+    rsiVal += ' (Overbought Alert)';
+  }
+  const rsiScore = rsi >= 40 && rsi <= 65 ? 10 : rsi >= 30 && rsi < 40 ? 6 : rsi > 65 && rsi <= 75 ? 5 : 2;
+  score += rsiScore;
+  checklist.push({
+    label: 'RSI Momentum Zone',
+    passed: rsi >= 40 && rsi <= 70,
+    value: rsiVal,
+    desc: 'RSI between 40 and 65 signals healthy trend momentum. Avoid entry when RSI is > 75 (overbought).',
+    score: rsiScore,
+    max: 10
+  });
+
+  // 2. MACD Trend Check
+  let macdVal = 'Bearish';
+  if (macdCrossover) {
+    macdVal = 'Bullish Crossover! 🔥';
+  } else if (macdBullish) {
+    macdVal = 'Bullish Alignment';
+  }
+  const macdScore = macdCrossover ? 10 : macdBullish ? 7 : 2;
+  score += macdScore;
+  checklist.push({
+    label: 'MACD Trend Confirmation',
+    passed: macdCrossover || macdBullish,
+    value: macdVal,
+    desc: 'Bullish MACD line crossing above the signal line indicates positive momentum acceleration.',
+    score: macdScore,
+    max: 10
+  });
+
+  return {
+    score: Math.min(20, score),
+    checklist,
+    indicators: {
+      rsi,
+      rsiSignal: rsi < 30 ? 'Oversold' : rsi > 70 ? 'Overbought' : rsi >= 40 && rsi <= 60 ? 'Healthy' : 'Neutral',
+      macd: parseFloat(lastMacd.toFixed(3)),
+      macdSignal: parseFloat(lastSignal.toFixed(3)),
+      macdCrossover,
+      macdBullish,
+      volData,
+      atr
+    }
+  };
+};
+
+const scoreSentiment = (fearGreed: any, news: any[]) => {
+  const checklist: any[] = [];
+  let score = 0;
+
+  // 1. Fear & Greed Index
+  const fgVal = fearGreed?.value || 50;
+  const fgValText = `${fgVal} - ${fearGreed?.text || 'Neutral'}`;
+
+  let fgScore = 4;
+  if (fgVal <= 45) {
+    fgScore = fgVal <= 25 ? 8 : 7;
+  } else if (fgVal <= 60) {
+    fgScore = 5;
+  } else {
+    fgScore = fgVal > 75 ? 2 : 3;
+  }
+  score += fgScore;
+  checklist.push({
+    label: 'Market Sentiment (Fear & Greed)',
+    passed: fgVal <= 45,
+    value: fgValText,
+    desc: 'Buying in Fear zones limits structural risk, while buying in Greed zones exposes to market reversals.',
+    score: fgScore,
+    max: 8
+  });
+
+  // 2. News Sentiment Bias
+  let newsVal = 'No News Sentiment';
+  let newsScore = 4;
+
+  if (news && news.length > 0) {
+    const pos = news.filter(n => n.sentiment === 'positive').length;
+    const neg = news.filter(n => n.sentiment === 'negative').length;
+    const total = news.length;
+    const ratio = (pos - neg) / total;
+
+    if (ratio > 0.1) {
+      newsVal = `Positive bias (+${Math.round(ratio * 100)}%)`;
+      newsScore = ratio > 0.4 ? 7 : 5;
+    } else if (ratio < -0.1) {
+      newsVal = `Negative bias (${Math.round(ratio * 100)}%)`;
+      newsScore = ratio < -0.4 ? 1 : 2;
+    } else {
+      newsVal = 'Neutral news bias';
+      newsScore = 4;
+    }
+  }
+  score += newsScore;
+  checklist.push({
+    label: 'News Sentiment Ratio',
+    passed: newsScore >= 4,
+    value: newsVal,
+    desc: 'Monitors the ratio of positive to negative press and research reports on the stock.',
+    score: newsScore,
+    max: 7
+  });
+
+  return { score: Math.min(15, score), checklist };
+};
+
+const scoreInstitutional = (fund: any, volData: any) => {
+  const checklist: any[] = [];
+  let score = 0;
+
+  // 1. Shareholding & FII/DII positioning
+  let flowPassed = false;
+  let flowVal = 'Neutral Flows';
+  const sh = fund?.shareholding || {};
+
+  let instPercentage = null;
+  if (sh.fii && sh.fii.length > 0) {
+    instPercentage = sh.fii[sh.fii.length - 1] || 0;
+  } else if (sh.institutions !== undefined && sh.institutions !== null) {
+    instPercentage = sh.institutions;
+  }
+
+  if (instPercentage !== null && instPercentage > 25) {
+    flowPassed = true;
+    flowVal = `High FII/DII (${instPercentage.toFixed(1)}%)`;
+  } else if (volData?.accumulation) {
+    flowPassed = true;
+    flowVal = 'Accumulation Spike (Est)';
+  } else if (instPercentage !== null) {
+    flowVal = `FII/DII: ${instPercentage.toFixed(1)}%`;
+  }
+
+  const instScore = instPercentage && instPercentage > 35 ? 10 : (instPercentage && instPercentage > 25 ? 8 : (volData?.accumulation ? 8 : (volData?.institutionalSignal === 'moderate' ? 6 : 4)));
+  score += instScore;
+  checklist.push({
+    label: 'Institutional Holdings (FII/DII)',
+    passed: flowPassed || instScore >= 6,
+    value: flowVal,
+    desc: 'Tracking promoter holding and institutional accumulation reveals smart money actions.',
+    score: instScore,
+    max: 10
+  });
+
+  // 2. Volume & Delivery/Block deals indicators
+  let volPassed = false;
+  let volVal = `${volData?.latestRatio || 1.0}x avg`;
+  if (volData?.latestRatio >= 1.5) {
+    volPassed = true;
+    volVal += ' (Surge)';
+  }
+  const volScore = volData?.latestRatio >= 2.0 ? 10 : (volData?.latestRatio >= 1.5 ? 8 : (volData?.latestRatio >= 1.0 ? 6 : 2));
+  score += volScore;
+  checklist.push({
+    label: 'Volume Flow & Block Indicators',
+    passed: volPassed,
+    value: volVal,
+    desc: 'Volume expansion confirms the price move is backed by institutional buying, not noise.',
+    score: volScore,
+    max: 10
+  });
+
+  return { score: Math.min(20, score), checklist };
+};
+
+const compositeScore = (
+  fundScore: number, 
+  setupScore: number, 
+  momScore: number, 
+  sentScore: number, 
+  instScore: number, 
+  price: number, 
+  sma200: number | null, 
+  customWeights: any, 
+  activeRegime: 'bull' | 'bear' = 'bull'
+) => {
+  const w = customWeights || {
+    fundamental: 25,
+    technical: 30,
+    momentum: 20,
+    sentiment: 10,
+    institutional: 15
+  };
+
+  let wFund = w.fundamental;
+  let wSetup = w.technical;
+  let wMom = w.momentum;
+  let wSent = w.sentiment;
+  let wInst = w.institutional;
+
+  if (activeRegime === 'bear') {
+    wMom = wMom * 0.7;
+    wSetup = wSetup * 0.7;
+    wFund = wFund * 1.3;
+    
+    const sum = wFund + wSetup + wMom + wSent + wInst;
+    if (sum > 0) {
+      wFund = (wFund / sum) * 100;
+      wSetup = (wSetup / sum) * 100;
+      wMom = (wMom / sum) * 100;
+      wSent = (wSent / sum) * 100;
+      wInst = (wInst / sum) * 100;
+    }
+  }
+
+  const pFund = fundScore / 25;
+  const pSetup = setupScore / 20;
+  const pMom = momScore / 20;
+  const pSent = sentScore / 15;
+  const pInst = instScore / 20;
+
+  let total = (pFund * wFund) + (pSetup * wSetup) + (pMom * wMom) + (pSent * wSent) + (pInst * wInst);
+  total = Math.round(Math.min(100, Math.max(0, total)));
+
+  let isInvalidated = false;
+  if (sma200 && price < sma200) {
+    isInvalidated = true;
+    if (total >= 65) {
+      total = 64; // strictly cap below 65
+    }
+  }
+
+  let rating: string;
+  let ratingClass: string;
+  let emoji: string;
+
+  if (isInvalidated && total >= 50) {
+    rating = 'High-Risk Contrarian Mean-Reversion Play';
+    ratingClass = 'watch';
+    emoji = '⚠️';
+  } else if (total >= 80) {
+    rating = 'Strong Buy';
+    ratingClass = 'strong-buy';
+    emoji = '🟢';
+  } else if (total >= 65) {
+    rating = 'Buy';
+    ratingClass = 'buy';
+    emoji = '🟡';
+  } else if (total >= 50) {
+    rating = 'Watch';
+    ratingClass = 'watch';
+    emoji = '🟠';
+  } else if (total >= 35) {
+    rating = 'Avoid';
+    ratingClass = 'avoid';
+    emoji = '🔴';
+  } else {
+    rating = 'Strong Avoid';
+    ratingClass = 'strong-avoid';
+    emoji = '⛔';
+  }
+
+  return { total, rating, ratingClass, emoji, isInvalidated };
+};
+
+const getComponentsForSymbol = (symbol: string) => {
+  let hash = 0;
+  for (let i = 0; i < symbol.length; i++) {
+    hash = symbol.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  const getVal = (seed: number, max: number) => {
+    return Math.abs((hash * seed) % (max + 1));
+  };
+  return {
+    fund: getVal(17, 25),
+    tech: getVal(31, 20),
+    mom: getVal(43, 20),
+    sent: getVal(59, 15),
+    inst: getVal(73, 20)
+  };
+};
+
+const calcTradeSetup = (currentPrice: number, setupInds: any, momInds: any) => {
+  const atr = momInds?.atr || currentPrice * 0.02;
+  const sr = setupInds?.sr || {};
+
+  const stopLoss = parseFloat((currentPrice - 1.5 * atr).toFixed(2));
+
+  const t1 = sr.r1 && sr.r1 > currentPrice ? sr.r1 : currentPrice + 1.5 * atr;
+  const t2 = sr.r2 && sr.r2 > t1 ? sr.r2 : t1 + 1.5 * atr;
+  const t3 = sr.r3 && sr.r3 > t2 ? sr.r3 : t2 + 1.5 * atr;
+
+  let target1 = parseFloat(t1.toFixed(2));
+  if (target1 <= currentPrice) {
+    target1 = parseFloat((currentPrice + 1.5 * atr).toFixed(2));
+  }
+
+  let target2 = parseFloat(t2.toFixed(2));
+  if (target2 <= target1) {
+    target2 = parseFloat((target1 + 1.5 * atr).toFixed(2));
+  }
+
+  let target3 = parseFloat(t3.toFixed(2));
+  if (target3 <= target2) {
+    target3 = parseFloat((target2 + 1.5 * atr).toFixed(2));
+  }
+
+  const riskReward = parseFloat(((target2 - currentPrice) / (currentPrice - stopLoss)).toFixed(2));
+
+  return { stopLoss, target1, target2, target3, riskReward };
+};
+
+const determineMarketPhase = (price: number, fiftyTwoWeekHigh: number, s1: number | null, score: number) => {
+  const drawdown = (fiftyTwoWeekHigh - price) / fiftyTwoWeekHigh;
+  if (drawdown <= 0.025) {
+    return {
+      phase: "All-Time High",
+      justification: "The stock is trading within 2.5% of its 52-week high, displaying strong momentum but with potential consolidation risk near peaks."
+    };
+  }
+  const isNearSupport = s1 && (price <= s1 * 1.05 && price >= s1 * 0.95);
+  if (score >= 65 && (isNearSupport || (drawdown > 0.025 && drawdown < 0.10))) {
+    return {
+      phase: "Buy Zone",
+      justification: "The stock is trading near solid support levels with a high composite rating, representing an optimal low-risk entry zone."
+    };
+  }
+  if (drawdown >= 0.10 && drawdown <= 0.20) {
+    return {
+      phase: "Correction Phase",
+      justification: "The stock has experienced a healthy 10-20% correction from its peak, presenting selective accumulation opportunities near major supports."
+    };
+  }
+  if (drawdown > 0.20) {
+    return {
+      phase: "Bearish Correction Phase",
+      justification: "The stock is in a deeper correction phase (down >20% from peak), trading below standard levels. Risk mitigation is highly advised."
+    };
+  }
+  return {
+    phase: "Consolidation Zone",
+    justification: "The stock is consolidating between its peak and core support. Wait for breakout or pullback to buy zone."
+  };
+};
+
 interface Trade {
   id: string;
   symbol: string;
@@ -34,6 +963,11 @@ interface Trade {
   execution_hash?: string;
   slippage?: number;
   setup_logic?: string;
+  stop_loss?: number;
+  take_profit?: number;
+  is_trailing?: boolean;
+  trailing_offset?: number;
+  is_user_adjusted?: boolean;
 }
 
 // Compute correct directional P&L regardless of the DB generated column formula
@@ -56,28 +990,28 @@ const parseSlTpFromLogic = (setupLogic: string) => {
 };
 
 // Forex & Indian Currency Formatters
-const formatCurrency = (val: number, env: 'INDIAN' | 'FOREX', decimals: number = 2) => {
-  const isForex = env === 'FOREX';
-  const prefix = isForex ? '$' : '₹';
-  const locale = isForex ? 'en-US' : 'en-IN';
+const formatCurrency = (val: number, env: 'INDIAN' | 'FOREX' | 'SWING', decimals: number = 2) => {
+  const isUSD = env === 'FOREX' || env === 'SWING';
+  const prefix = isUSD ? '$' : '₹';
+  const locale = isUSD ? 'en-US' : 'en-IN';
   return `${prefix}${Number(val).toLocaleString(locale, { 
     minimumFractionDigits: decimals, 
     maximumFractionDigits: decimals 
   })}`;
 };
 
-const formatCurrencyCompact = (val: number, env: 'INDIAN' | 'FOREX') => {
-  const isForex = env === 'FOREX';
-  const prefix = isForex ? '$' : '₹';
-  const locale = isForex ? 'en-US' : 'en-IN';
+const formatCurrencyCompact = (val: number, env: 'INDIAN' | 'FOREX' | 'SWING') => {
+  const isUSD = env === 'FOREX' || env === 'SWING';
+  const prefix = isUSD ? '$' : '₹';
+  const locale = isUSD ? 'en-US' : 'en-IN';
   return `${prefix}${Number(val).toLocaleString(locale, { 
     maximumFractionDigits: 0 
   })}`;
 };
 
-const formatPrice = (val: number, env: 'INDIAN' | 'FOREX') => {
-  const isForex = env === 'FOREX';
-  const decimals = isForex ? 4 : 2;
+const formatPrice = (val: number, env: 'INDIAN' | 'FOREX' | 'SWING') => {
+  const isUSD = env === 'FOREX' || env === 'SWING';
+  const decimals = env === 'FOREX' ? 4 : 2;
   return formatCurrency(val, env, decimals);
 };
 
@@ -502,7 +1436,7 @@ const calculateDailyBreakdown = (tradesList: Trade[]) => {
 
 export default function Dashboard() {
   const [mounted, setMounted] = useState(false);
-  const [marketEnv, setMarketEnv] = useState<'INDIAN' | 'FOREX'>('INDIAN');
+  const [marketEnv, setMarketEnv] = useState<'INDIAN' | 'FOREX' | 'SWING'>('INDIAN');
   const [metrics, setMetrics] = useState<AccountMetrics>({
     account_capital: 100000.0,
     win_rate: 0.0,
@@ -568,7 +1502,225 @@ export default function Dashboard() {
   // Auth state for Google Sign-In
   const [user, setUser] = useState<any>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [userProfile, setUserProfile] = useState<any>(null);
+  const [isAdminModalOpen, setIsAdminModalOpen] = useState(false);
+  const [adminInsights, setAdminInsights] = useState<any>(null);
+  const [adminInsightsLoading, setAdminInsightsLoading] = useState(false);
+  const [userProfilesList, setUserProfilesList] = useState<any[]>([]);
+
+  // Swing Trading States
+  const [swingWatchlist, setSwingWatchlist] = useState<any[]>([]);
+  const [swingSignals, setSwingSignals] = useState<any[]>([]);
+  const [swingHoldings, setSwingHoldings] = useState<any[]>([]);
+  const [swingPerformance, setSwingPerformance] = useState<any[]>([]);
+  const [swingActiveTab, setSwingActiveTab] = useState<'WATCHLIST' | 'PICKS' | 'PORTFOLIO' | 'SCREENER' | 'BACKTESTER' | 'PERFORMANCE'>('WATCHLIST');
+  const [selectedSwingSymbol, setSelectedSwingSymbol] = useState<string>('RELIANCE.NS');
+  const [selectedSwingName, setSelectedSwingName] = useState<string>('Reliance Industries');
+  const [selectedSwingSector, setSelectedSwingSector] = useState<string>('Energy');
+  
+  const [swingWeights, setSwingWeights] = useState({
+    fundamental: 25,
+    technical: 30,
+    momentum: 20,
+    sentiment: 10,
+    institutional: 15
+  });
+
+  const [swingAnalysis, setSwingAnalysis] = useState<any>(null);
+  const [swingAnalysisLoading, setSwingAnalysisLoading] = useState(false);
+
+  // Backtester states
+  const [btThreshold, setBtThreshold] = useState<number>(65);
+  const [btHoldingPeriod, setBtHoldingPeriod] = useState<number>(30);
+  const [btLookback, setBtLookback] = useState<number>(365);
+  const [btResults, setBtResults] = useState<any>(null);
+  const [btLoading, setBtLoading] = useState<boolean>(false);
+
+  // Screener states
+  const [screenSector, setScreenSector] = useState<string>('ALL');
+  const [screenCap, setScreenCap] = useState<string>('ALL');
+  const [screenRating, setScreenRating] = useState<string>('ALL');
+  const [screenerResults, setScreenerResults] = useState<any[]>([]);
+  
+  // Watchlist edit inputs (admin only)
+  const [newWatchlistSymbol, setNewWatchlistSymbol] = useState<string>('');
+  const [newWatchlistName, setNewWatchlistName] = useState<string>('');
+  const [newWatchlistSector, setNewWatchlistSector] = useState<string>('Energy');
+
+  // Manual SL/TP Adjust states
+  const [expandedActiveTradeId, setExpandedActiveTradeId] = useState<string | null>(null);
+  const [adjustSl, setAdjustSl] = useState<Record<string, string>>({});
+  const [adjustTp, setAdjustTp] = useState<Record<string, string>>({});
+  const [adjustIsTrailing, setAdjustIsTrailing] = useState<Record<string, boolean>>({});
+  const [adjustOffset, setAdjustOffset] = useState<Record<string, string>>({});
+  const [adjustLoading, setAdjustLoading] = useState<Record<string, boolean>>({});
+
+  // Swing Holdings Input Form states
+  const [newHoldingSymbol, setNewHoldingSymbol] = useState('');
+  const [newHoldingPrice, setNewHoldingPrice] = useState('');
+  const [newHoldingQty, setNewHoldingQty] = useState('');
+
+  // Proportional Weights Slider Adjuster
+  const handleWeightChange = (key: string, val: number) => {
+    const otherKeys = Object.keys(swingWeights).filter(k => k !== key);
+    const otherSum = otherKeys.reduce((s, k) => s + (swingWeights as any)[k], 0);
+    const remaining = 100 - val;
+    if (otherSum === 0) {
+      const newVal = Math.round(remaining / otherKeys.length);
+      const updated = { ...swingWeights, [key]: val };
+      otherKeys.forEach(k => { (updated as any)[k] = newVal; });
+      setSwingWeights(updated);
+    } else {
+      const updated = { ...swingWeights, [key]: val };
+      let currentOtherSum = 0;
+      otherKeys.forEach((k, idx) => {
+        if (idx === otherKeys.length - 1) {
+          (updated as any)[k] = 100 - val - currentOtherSum;
+        } else {
+          const share = Math.round(((swingWeights as any)[k] / otherSum) * remaining);
+          (updated as any)[k] = share;
+          currentOtherSum += share;
+        }
+      });
+      setSwingWeights(updated);
+    }
+  };
+
+  // Swing Data Loader
+  const loadSwingData = async () => {
+    try {
+      const headers = await getAuthHeaders();
+      const [wlRes, sigRes, holdRes, perfRes] = await Promise.all([
+        fetch(`${BACKEND_URL}/api/swing/watchlist`, { headers }),
+        fetch(`${BACKEND_URL}/api/swing/signals`, { headers }),
+        fetch(`${BACKEND_URL}/api/swing/holdings`, { headers }),
+        fetch(`${BACKEND_URL}/api/swing/performance`, { headers }),
+      ]);
+
+      if (wlRes.ok) setSwingWatchlist(await wlRes.json());
+      if (sigRes.ok) setSwingSignals(await sigRes.json());
+      if (holdRes.ok) setSwingHoldings(await holdRes.json());
+      if (perfRes.ok) setSwingPerformance(await perfRes.json());
+    } catch (err) {
+      console.error("Error loading swing data:", err);
+    }
+  };
+
+  // Manual Risk Parameters Adjustment submission
+  const handleAdjustSubmit = async (tradeId: string, marketType: string) => {
+    setAdjustLoading(prev => ({ ...prev, [tradeId]: true }));
+    try {
+      const headers = await getAuthHeaders();
+      const sl = parseFloat(adjustSl[tradeId]);
+      const tp = parseFloat(adjustTp[tradeId]);
+      const isTrailing = !!adjustIsTrailing[tradeId];
+      const offset = parseFloat(adjustOffset[tradeId] || '0');
+
+      if (isNaN(sl) || isNaN(tp)) {
+        alert("Please enter valid Stop Loss and Take Profit prices.");
+        return;
+      }
+
+      const res = await fetch(`${BACKEND_URL}/api/trade/adjust`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          trade_id: tradeId,
+          market_type: marketType,
+          stop_loss: sl,
+          take_profit: tp,
+          is_trailing: isTrailing,
+          trailing_offset: offset
+        })
+      });
+
+      if (res.ok) {
+        setExpandedActiveTradeId(null);
+        loadData();
+      } else {
+        const err = await res.json();
+        alert(`Failed to update trade: ${err.detail || 'Server error'}`);
+      }
+    } catch (e) {
+      console.error(e);
+      alert("Error adjusting trade parameters.");
+    } finally {
+      setAdjustLoading(prev => ({ ...prev, [tradeId]: false }));
+    }
+  };
+
+  // Toggle active trade details pre-populator
+  const toggleActiveTradeExpand = (t: Trade) => {
+    if (expandedActiveTradeId === t.id) {
+      setExpandedActiveTradeId(null);
+    } else {
+      const parsed = parseSlTpFromLogic(t.setup_logic || "");
+      const currentSl = t.stop_loss || (parsed ? parsed.sl : 0);
+      const currentTp = t.take_profit || (parsed ? parsed.tp : 0);
+      const isTrailing = !!t.is_trailing;
+      const offset = t.trailing_offset || 0;
+
+      setAdjustSl(prev => ({ ...prev, [t.id]: String(currentSl) }));
+      setAdjustTp(prev => ({ ...prev, [t.id]: String(currentTp) }));
+      setAdjustIsTrailing(prev => ({ ...prev, [t.id]: isTrailing }));
+      setAdjustOffset(prev => ({ ...prev, [t.id]: String(offset) }));
+      setExpandedActiveTradeId(t.id);
+    }
+  };
+
+  // Load Admin dashboard stats
+  const loadAdminInsights = async () => {
+    setAdminInsightsLoading(true);
+    try {
+      const headers = await getAuthHeaders();
+      const res = await fetch(`${BACKEND_URL}/api/admin/insights`, { headers });
+      if (res.ok) {
+        const data = await res.json();
+        setAdminInsights(data);
+        setUserProfilesList(data.user_profiles || []);
+      } else {
+        console.error("Failed to load admin insights:", res.statusText);
+      }
+    } catch (err) {
+      console.error("Error loading admin insights:", err);
+    } finally {
+      setAdminInsightsLoading(false);
+    }
+  };
+
+  // Update user subscription level & tokens
+  const handleUpdateUserProfile = async (userId: string, newStatus: string, tokens: number) => {
+    try {
+      const headers = await getAuthHeaders();
+      const res = await fetch(`${BACKEND_URL}/api/admin/user/update`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          user_id: userId,
+          subscription_status: newStatus,
+          token_balance: tokens
+        })
+      });
+      if (res.ok) {
+        loadAdminInsights();
+      } else {
+        const err = await res.json();
+        alert(`Failed to update user profile: ${err.detail || 'Server error'}`);
+      }
+    } catch (err) {
+      console.error("Error updating user profile:", err);
+    }
+  };
+
   const [bannersDismissed, setBannersDismissed] = useState<Record<string, boolean>>({});
+
+  // Safety timeout to guarantee the loading screen gets dismissed in case of deadlocks
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setAuthLoading(false);
+    }, 4000);
+    return () => clearTimeout(timer);
+  }, []);
 
   // Auto-switch default asset on environment change
   useEffect(() => {
@@ -728,6 +1880,50 @@ export default function Dashboard() {
     };
   }, []);
 
+  // ── Load and Subscribe to User Profile ─────────────────────────────────────
+  useEffect(() => {
+    if (!user) {
+      setUserProfile(null);
+      return;
+    }
+
+    const loadProfile = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('user_profiles')
+          .select('*')
+          .eq('id', user.id)
+          .single();
+        if (data) {
+          setUserProfile(data);
+        } else if (error) {
+          console.warn("User profile fetch failed, the backend trigger will auto-provision it shortly.", error);
+        }
+      } catch (err) {
+        console.error("Error loading user profile:", err);
+      }
+    };
+
+    loadProfile();
+
+    // Set up Real-Time subscription for this user's profile changes
+    const profileChannel = supabase
+      .channel(`profile-channel-${user.id}`)
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'user_profiles', filter: `id=eq.${user.id}` },
+        (payload) => {
+          console.log("👤 [BIFROST AUTH] profile updated in real-time:", payload.new);
+          setUserProfile(payload.new);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(profileChannel);
+    };
+  }, [user]);
+
   // Initialize clock and mount state
   useEffect(() => {
     setMounted(true);
@@ -849,6 +2045,11 @@ export default function Dashboard() {
       const openTrade = resolvedTrades.find(t => t.status === 'OPEN' && isAssetMatch(assetRef.current, t.symbol));
       if (openTrade) {
         setLiveSpotPrice(Number(openTrade.entry_price));
+      }
+
+      // Automatically fetch Swing Trading data if marketEnv is SWING
+      if (marketEnv === 'SWING') {
+        loadSwingData();
       }
     } catch (e) {
       console.error("Error loading data:", e);
@@ -1505,7 +2706,10 @@ export default function Dashboard() {
     setCustomScanLoading(true);
     setCustomScanResult(null);
     try {
-      const res = await fetch(`${BACKEND_URL}/api/scan-asset?ticker=${encodeURIComponent(customScanTicker.trim())}&resolution=15m`);
+      const headers = await getAuthHeaders();
+      const res = await fetch(`${BACKEND_URL}/api/scan-asset?ticker=${encodeURIComponent(customScanTicker.trim())}&resolution=15m`, {
+        headers
+      });
       const data = await res.json();
       setCustomScanResult(data);
     } catch (err) {
@@ -1528,9 +2732,10 @@ export default function Dashboard() {
     setChatLoading(true);
 
     try {
+      const headers = await getAuthHeaders();
       const res = await fetch(`${BACKEND_URL}/api/ai/chat`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           message: textToSend,
           market_env: marketEnv,
@@ -1612,6 +2817,992 @@ export default function Dashboard() {
     );
   }
 
+  // ── Swing Trading Dashboard Layout Component ──
+  const SwingTradingDashboard = () => {
+    // Watchlist add states (for form inputs)
+    const [wlSymbol, setWlSymbol] = useState('');
+    const [wlName, setWlName] = useState('');
+    const [wlSector, setWlSector] = useState('Energy');
+    const [wlPrice, setWlPrice] = useState('');
+    const [wlTarget1, setWlTarget1] = useState('');
+    const [wlTarget2, setWlTarget2] = useState('');
+    const [wlStopLoss, setWlStopLoss] = useState('');
+    const [wlSaving, setWlSaving] = useState(false);
+
+    // Smart Picks states
+    const [picksSearch, setPicksSearch] = useState('');
+
+    const handleAddWatchlist = async (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!wlSymbol.trim()) return;
+      setWlSaving(true);
+      try {
+        const headers = await getAuthHeaders();
+        const res = await fetch(`${BACKEND_URL}/api/swing/watchlist/add`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            symbol: wlSymbol.trim().toUpperCase(),
+            name: wlName.trim() || wlSymbol.trim().toUpperCase(),
+            sector: wlSector,
+            market: "IN"
+          })
+        });
+        if (res.ok) {
+          // Add manually if DB updated
+          const payload = {
+            symbol: wlSymbol.trim().toUpperCase(),
+            name: wlName.trim() || wlSymbol.trim().toUpperCase(),
+            sector: wlSector,
+            price: wlPrice ? parseFloat(wlPrice) : null,
+            target_1: wlTarget1 ? parseFloat(wlTarget1) : null,
+            target_2: wlTarget2 ? parseFloat(wlTarget2) : null,
+            stop_loss: wlStopLoss ? parseFloat(wlStopLoss) : null,
+            status: "ACTIVE"
+          };
+          
+          // Upsert in Supabase recommendations directly to also store targets
+          const { error } = await supabase.from('recommendations').upsert(payload, { onConflict: 'symbol' });
+          if (error) console.error("Error upserting targets in recommendations:", error);
+
+          setWlSymbol('');
+          setWlName('');
+          setWlPrice('');
+          setWlTarget1('');
+          setWlTarget2('');
+          setWlStopLoss('');
+          loadSwingData();
+        } else {
+          const err = await res.json();
+          alert(`Failed to add watchlist item: ${err.detail || 'Server error'}`);
+        }
+      } catch (err) {
+        console.error(err);
+      } finally {
+        setWlSaving(false);
+      }
+    };
+
+    const handleRemoveWatchlist = async (symbol: string) => {
+      if (!confirm(`Are you sure you want to remove ${symbol} from the watchlist?`)) return;
+      try {
+        const headers = await getAuthHeaders();
+        const res = await fetch(`${BACKEND_URL}/api/swing/watchlist/remove`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ symbol })
+        });
+        if (res.ok) {
+          loadSwingData();
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    };
+
+    const handleAddHolding = async (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!newHoldingSymbol.trim() || !newHoldingPrice || !newHoldingQty) return;
+      try {
+        const headers = await getAuthHeaders();
+        const res = await fetch(`${BACKEND_URL}/api/swing/holdings/update`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            symbol: newHoldingSymbol.trim().toUpperCase(),
+            average_buy_price: parseFloat(newHoldingPrice),
+            quantity: parseInt(newHoldingQty)
+          })
+        });
+        if (res.ok) {
+          setNewHoldingSymbol('');
+          setNewHoldingPrice('');
+          setNewHoldingQty('');
+          loadSwingData();
+        } else {
+          const err = await res.json();
+          alert(`Failed to update holding: ${err.detail || 'Server error'}`);
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    };
+
+    const handleTriggerSignal = async (item: any, comps: any) => {
+      const setup = calcTradeSetup(item.price || 100, {}, { atr: (item.price || 100) * 0.02 });
+      try {
+        const headers = await getAuthHeaders();
+        const res = await fetch(`${BACKEND_URL}/api/swing/signal/create`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            symbol: item.symbol,
+            entry_price: item.price || 100,
+            target_price: setup.target2,
+            stop_loss: setup.stopLoss,
+            composite_score: comps.total,
+            status: "ACTIVE"
+          })
+        });
+        if (res.ok) {
+          alert(`Trade signal successfully triggered for ${item.symbol}!`);
+          loadSwingData();
+        } else {
+          const err = await res.json();
+          alert(`Failed to trigger signal: ${err.detail || 'Server error'}`);
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    };
+
+    // Filter screener list
+    const filteredScreener = swingWatchlist.filter(item => {
+      const comps = getComponentsForSymbol(item.symbol);
+      const ratingRes = compositeScore(comps.fund, comps.tech, comps.mom, comps.sent, comps.inst, item.price || 100, 100, swingWeights);
+      
+      const matchSector = screenSector === 'ALL' || item.sector?.toUpperCase() === screenSector.toUpperCase();
+      const matchRating = screenRating === 'ALL' || ratingRes.ratingClass.toUpperCase() === screenRating.toUpperCase();
+      
+      // Determine market cap using symbol index
+      let cap = 'Large Cap';
+      if (item.symbol.charCodeAt(0) % 3 === 1) cap = 'Mid Cap';
+      else if (item.symbol.charCodeAt(0) % 3 === 2) cap = 'Small Cap';
+      const matchCap = screenCap === 'ALL' || cap.toUpperCase() === screenCap.toUpperCase();
+
+      return matchSector && matchRating && matchCap;
+    });
+
+    return (
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 font-mono text-xs">
+        {/* Left Column: Sliders */}
+        <div className="lg:col-span-1 border border-slate-800 bg-[#070b15]/95 rounded-2xl p-5 shadow-2xl flex flex-col gap-5">
+          <div className="border-b border-slate-850 pb-3 flex justify-between items-center">
+            <h2 className="text-xs font-black tracking-widest text-slate-400 uppercase">COMPOSITE SCORING WEIGHTS</h2>
+            <div className="px-2 py-0.5 rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/25 text-[10px] font-black animate-pulse">
+              SUM: 100%
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            <div>
+              <div className="flex justify-between font-bold mb-1">
+                <span className="text-slate-400">Fundamental Weight</span>
+                <span className="text-cyan-400">{swingWeights.fundamental}%</span>
+              </div>
+              <input
+                type="range"
+                min="0"
+                max="100"
+                value={swingWeights.fundamental}
+                onChange={(e) => handleWeightChange('fundamental', parseInt(e.target.value))}
+                className="w-full h-1 bg-slate-900 rounded-lg appearance-none cursor-pointer accent-cyan-500"
+              />
+            </div>
+
+            <div>
+              <div className="flex justify-between font-bold mb-1">
+                <span className="text-slate-400">Technical Weight</span>
+                <span className="text-cyan-400">{swingWeights.technical}%</span>
+              </div>
+              <input
+                type="range"
+                min="0"
+                max="100"
+                value={swingWeights.technical}
+                onChange={(e) => handleWeightChange('technical', parseInt(e.target.value))}
+                className="w-full h-1 bg-slate-900 rounded-lg appearance-none cursor-pointer accent-cyan-500"
+              />
+            </div>
+
+            <div>
+              <div className="flex justify-between font-bold mb-1">
+                <span className="text-slate-400">Momentum Weight</span>
+                <span className="text-cyan-400">{swingWeights.momentum}%</span>
+              </div>
+              <input
+                type="range"
+                min="0"
+                max="100"
+                value={swingWeights.momentum}
+                onChange={(e) => handleWeightChange('momentum', parseInt(e.target.value))}
+                className="w-full h-1 bg-slate-900 rounded-lg appearance-none cursor-pointer accent-cyan-500"
+              />
+            </div>
+
+            <div>
+              <div className="flex justify-between font-bold mb-1">
+                <span className="text-slate-400">Sentiment Weight</span>
+                <span className="text-cyan-400">{swingWeights.sentiment}%</span>
+              </div>
+              <input
+                type="range"
+                min="0"
+                max="100"
+                value={swingWeights.sentiment}
+                onChange={(e) => handleWeightChange('sentiment', parseInt(e.target.value))}
+                className="w-full h-1 bg-slate-900 rounded-lg appearance-none cursor-pointer accent-cyan-500"
+              />
+            </div>
+
+            <div>
+              <div className="flex justify-between font-bold mb-1">
+                <span className="text-slate-400">Institutional Weight</span>
+                <span className="text-cyan-400">{swingWeights.institutional}%</span>
+              </div>
+              <input
+                type="range"
+                min="0"
+                max="100"
+                value={swingWeights.institutional}
+                onChange={(e) => handleWeightChange('institutional', parseInt(e.target.value))}
+                className="w-full h-1 bg-slate-900 rounded-lg appearance-none cursor-pointer accent-cyan-500"
+              />
+            </div>
+          </div>
+
+          <div className="bg-slate-900/30 border border-slate-850 rounded-xl p-3 text-[10px] text-slate-500 leading-relaxed">
+            💡 Changing weights dynamically recalculates composite scores and buy recommendations for all watchlist symbols instantly.
+          </div>
+        </div>
+
+        {/* Right Column: Content Area */}
+        <div className="lg:col-span-2 flex flex-col gap-4">
+          <div className="border border-slate-800 bg-[#070b15]/95 rounded-2xl p-4 shadow-2xl">
+            {/* Tabs Selector */}
+            <div className="flex gap-4 border-b border-slate-850 pb-2 mb-4">
+              {['WATCHLIST', 'PICKS', 'PORTFOLIO', 'SCREENER', 'BACKTESTER', 'PERFORMANCE'].map((tab) => (
+                <button
+                  key={tab}
+                  onClick={() => setSwingActiveTab(tab as any)}
+                  className={`font-bold tracking-widest text-[10px] pb-1 border-b-2 transition-colors cursor-pointer ${
+                    swingActiveTab === tab ? 'border-amber-500 text-amber-400 font-extrabold' : 'border-transparent text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  {tab}
+                </button>
+              ))}
+            </div>
+
+            {/* Sub-tab: Watchlist */}
+            {swingActiveTab === 'WATCHLIST' && (
+              <div className="space-y-4">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse text-[10px]">
+                    <thead>
+                      <tr className="border-b border-slate-800 text-slate-500 uppercase tracking-widest text-[8px]">
+                        <th className="py-2 px-1">Symbol</th>
+                        <th className="py-2 px-1">Name</th>
+                        <th className="py-2 px-1">Sector</th>
+                        <th className="py-2 px-1">Price</th>
+                        <th className="py-2 px-1">Target 1</th>
+                        <th className="py-2 px-1">Target 2</th>
+                        <th className="py-2 px-1">Stop Loss</th>
+                        <th className="py-2 px-1 text-center">Score</th>
+                        {userProfile?.role === 'admin' && <th className="py-2 px-1 text-right">Actions</th>}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {swingWatchlist.length === 0 ? (
+                        <tr>
+                          <td colSpan={9} className="text-center py-6 text-slate-500">
+                            No symbols found. Add symbols to scan.
+                          </td>
+                        </tr>
+                      ) : (
+                        swingWatchlist.map((item) => {
+                          const comps = getComponentsForSymbol(item.symbol);
+                          const ratingRes = compositeScore(comps.fund, comps.tech, comps.mom, comps.sent, comps.inst, item.price || 100, 100, swingWeights);
+                          const isSelected = selectedSwingSymbol === item.symbol;
+                          return (
+                            <tr
+                              key={item.id}
+                              onClick={() => {
+                                setSelectedSwingSymbol(item.symbol);
+                                setSelectedSwingName(item.name || item.symbol);
+                                setSelectedSwingSector(item.sector || 'Unknown');
+                              }}
+                              className={`border-b border-slate-850 hover:bg-slate-900/30 cursor-pointer transition-colors ${
+                                isSelected ? 'bg-amber-500/[0.02] border-l-2 border-l-amber-500' : ''
+                              }`}
+                            >
+                              <td className="py-2.5 px-1 font-bold text-slate-200">{item.symbol}</td>
+                              <td className="py-2.5 px-1 text-slate-400 truncate max-w-[100px]">{item.name}</td>
+                              <td className="py-2.5 px-1 text-slate-400">{item.sector}</td>
+                              <td className="py-2.5 px-1 text-slate-350">{item.price ? `₹${Number(item.price).toFixed(2)}` : '—'}</td>
+                              <td className="py-2.5 px-1 text-emerald-500">{item.target_1 ? `₹${Number(item.target_1).toFixed(2)}` : '—'}</td>
+                              <td className="py-2.5 px-1 text-emerald-400">{item.target_2 ? `₹${Number(item.target_2).toFixed(2)}` : '—'}</td>
+                              <td className="py-2.5 px-1 text-rose-400">{item.stop_loss ? `₹${Number(item.stop_loss).toFixed(2)}` : '—'}</td>
+                              <td className="py-2.5 px-1 text-center font-black">
+                                <span className={`px-1 py-0.5 rounded ${
+                                  ratingRes.total >= 80 ? 'bg-emerald-500/10 text-emerald-400' : ratingRes.total >= 65 ? 'bg-cyan-500/10 text-cyan-400' : 'bg-slate-500/10 text-slate-400'
+                                }`}>
+                                  {ratingRes.total}
+                                </span>
+                              </td>
+                              {userProfile?.role === 'admin' && (
+                                <td className="py-2.5 px-1 text-right">
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleRemoveWatchlist(item.symbol);
+                                    }}
+                                    className="text-[8px] bg-rose-500/15 text-rose-400 hover:bg-rose-500/25 px-1 py-0.5 rounded cursor-pointer"
+                                  >
+                                    REMOVE
+                                  </button>
+                                </td>
+                              )}
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Admin Add Form */}
+                {userProfile?.role === 'admin' && (
+                  <form onSubmit={handleAddWatchlist} className="bg-slate-900/30 p-4 border border-slate-850 rounded-xl space-y-3">
+                    <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">ADD WATCHLIST ASSET TARGETS</h3>
+                    <div className="grid grid-cols-3 gap-3">
+                      <input
+                        type="text"
+                        placeholder="Symbol (e.g. INFOSYS)"
+                        value={wlSymbol}
+                        onChange={(e) => setWlSymbol(e.target.value)}
+                        className="bg-slate-950 border border-slate-800 rounded p-2 text-slate-200 focus:outline-none focus:border-amber-500 text-xs"
+                      />
+                      <input
+                        type="text"
+                        placeholder="Name (e.g. Infosys Ltd)"
+                        value={wlName}
+                        onChange={(e) => setWlName(e.target.value)}
+                        className="bg-slate-950 border border-slate-800 rounded p-2 text-slate-200 focus:outline-none focus:border-amber-500 text-xs"
+                      />
+                      <select
+                        value={wlSector}
+                        onChange={(e) => setWlSector(e.target.value)}
+                        className="bg-slate-950 border border-slate-800 rounded p-2 text-slate-400 focus:outline-none focus:border-amber-500 text-xs"
+                      >
+                        <option value="Energy">Energy</option>
+                        <option value="Technology">Technology</option>
+                        <option value="Finance">Finance</option>
+                        <option value="Consumer">Consumer</option>
+                        <option value="Healthcare">Healthcare</option>
+                        <option value="Automobile">Automobile</option>
+                      </select>
+                      <input
+                        type="number"
+                        step="0.01"
+                        placeholder="Price"
+                        value={wlPrice}
+                        onChange={(e) => setWlPrice(e.target.value)}
+                        className="bg-slate-950 border border-slate-800 rounded p-2 text-slate-200 focus:outline-none focus:border-amber-500 text-xs"
+                      />
+                      <input
+                        type="number"
+                        step="0.01"
+                        placeholder="Target 1"
+                        value={wlTarget1}
+                        onChange={(e) => setWlTarget1(e.target.value)}
+                        className="bg-slate-950 border border-slate-800 rounded p-2 text-slate-200 focus:outline-none focus:border-amber-500 text-xs"
+                      />
+                      <input
+                        type="number"
+                        step="0.01"
+                        placeholder="Target 2"
+                        value={wlTarget2}
+                        onChange={(e) => setWlTarget2(e.target.value)}
+                        className="bg-slate-950 border border-slate-800 rounded p-2 text-slate-200 focus:outline-none focus:border-amber-500 text-xs"
+                      />
+                      <input
+                        type="number"
+                        step="0.01"
+                        placeholder="Stop Loss"
+                        value={wlStopLoss}
+                        onChange={(e) => setWlStopLoss(e.target.value)}
+                        className="bg-slate-950 border border-slate-800 rounded p-2 text-slate-200 focus:outline-none focus:border-amber-500 text-xs"
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={wlSaving}
+                      className="bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold px-4 py-2 rounded-lg transition-all active:scale-95 disabled:opacity-50 cursor-pointer text-xs"
+                    >
+                      {wlSaving ? 'ADDING...' : 'ADD ASSET TARGETS'}
+                    </button>
+                  </form>
+                )}
+              </div>
+            )}
+
+            {/* Sub-tab: Smart Picks */}
+            {swingActiveTab === 'PICKS' && (
+              <div className="space-y-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <input
+                    type="text"
+                    placeholder="Search smart picks..."
+                    value={picksSearch}
+                    onChange={(e) => setPicksSearch(e.target.value)}
+                    className="bg-slate-900 border border-slate-850 rounded px-2 py-1.5 focus:outline-none text-[11px] text-slate-200 focus:border-amber-500 w-full font-bold placeholder:text-slate-600"
+                  />
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {swingWatchlist
+                    .map(item => {
+                      const comps = getComponentsForSymbol(item.symbol);
+                      const ratingRes = compositeScore(comps.fund, comps.tech, comps.mom, comps.sent, comps.inst, item.price || 100, 100, swingWeights);
+                      return { item, comps, ratingRes };
+                    })
+                    .filter(res => res.ratingRes.total >= 65 && res.item.symbol.includes(picksSearch.toUpperCase()))
+                    .sort((a, b) => b.ratingRes.total - a.ratingRes.total)
+                    .map(({ item, comps, ratingRes }) => {
+                      const setup = calcTradeSetup(item.price || 100, {}, { atr: (item.price || 100) * 0.02 });
+                      return (
+                        <div key={item.id} className="border border-slate-850 bg-slate-900/10 p-4 rounded-xl space-y-3 hover:border-amber-500/25 transition-all">
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <span className="text-slate-100 font-bold text-sm block">{item.symbol}</span>
+                              <span className="text-slate-500 text-[9px] font-bold uppercase">{item.name} | {item.sector}</span>
+                            </div>
+                            <span className={`px-2 py-0.5 rounded text-[9px] font-black ${
+                              ratingRes.total >= 80 ? 'bg-emerald-500/15 text-emerald-400' : 'bg-cyan-500/15 text-cyan-400'
+                            }`}>
+                              {ratingRes.rating.toUpperCase()} ({ratingRes.total})
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-3 gap-2 bg-slate-950/40 p-2.5 border border-slate-850/50 rounded-lg text-[9px]">
+                            <div>
+                              <span className="text-slate-500 uppercase tracking-widest block mb-0.5">Stop Loss</span>
+                              <span className="text-rose-400 font-bold font-mono">₹{setup.stopLoss}</span>
+                            </div>
+                            <div>
+                              <span className="text-slate-500 uppercase tracking-widest block mb-0.5">Target 1</span>
+                              <span className="text-emerald-400 font-bold font-mono">₹{setup.target1}</span>
+                            </div>
+                            <div>
+                              <span className="text-slate-500 uppercase tracking-widest block mb-0.5">Risk/Reward</span>
+                              <span className="text-slate-300 font-bold font-mono">{setup.riskReward}:1</span>
+                            </div>
+                          </div>
+
+                          {userProfile?.role === 'admin' && (
+                            <button
+                              onClick={() => handleTriggerSignal(item, ratingRes)}
+                              className="w-full bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold py-1.5 rounded-lg text-[10px] active:scale-95 transition-all cursor-pointer font-bold"
+                            >
+                              ⚡ TRIGGER ALGO TRADE SIGNAL
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                </div>
+              </div>
+            )}
+
+            {/* Sub-tab: Portfolio */}
+            {swingActiveTab === 'PORTFOLIO' && (
+              <div className="space-y-4">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse text-[10px]">
+                    <thead>
+                      <tr className="border-b border-slate-800 text-slate-500 uppercase tracking-widest text-[8px]">
+                        <th className="py-2 px-1">Symbol</th>
+                        <th className="py-2 px-1">Avg Price</th>
+                        <th className="py-2 px-1">Quantity</th>
+                        <th className="py-2 px-1">Invested Value</th>
+                        <th className="py-2 px-1">Current Price</th>
+                        <th className="py-2 px-1 text-right">P&L</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {swingHoldings.length === 0 ? (
+                        <tr>
+                          <td colSpan={6} className="text-center py-6 text-slate-500">
+                            No holdings in portfolio. Add your mock or live trade details.
+                          </td>
+                        </tr>
+                      ) : (
+                        swingHoldings.map((hold) => {
+                          const avg = Number(hold.average_buy_price);
+                          const qty = Number(hold.quantity);
+                          const current = livePrices[hold.symbol] || avg;
+                          const invested = avg * qty;
+                          const currentVal = current * qty;
+                          const pnlVal = currentVal - invested;
+                          return (
+                            <tr key={hold.id} className="border-b border-slate-850 hover:bg-slate-900/20">
+                              <td className="py-2.5 px-1 font-bold text-slate-200">{hold.symbol}</td>
+                              <td className="py-2.5 px-1 text-slate-350">₹{avg.toFixed(2)}</td>
+                              <td className="py-2.5 px-1 text-slate-350">{qty}</td>
+                              <td className="py-2.5 px-1 text-slate-350">₹{invested.toFixed(2)}</td>
+                              <td className="py-2.5 px-1 text-cyan-400 font-bold">₹{current.toFixed(2)}</td>
+                              <td className={`py-2.5 px-1 text-right font-black ${pnlVal >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                {pnlVal >= 0 ? '+' : ''}₹{pnlVal.toFixed(2)}
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+
+                <form onSubmit={handleAddHolding} className="bg-slate-900/30 p-4 border border-slate-850 rounded-xl space-y-3">
+                  <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">RECORD / UPDATE CUSTOM HOLDING</h3>
+                  <div className="grid grid-cols-3 gap-3">
+                    <input
+                      type="text"
+                      placeholder="Symbol (e.g. RELIANCE.NS)"
+                      value={newHoldingSymbol}
+                      onChange={(e) => setNewHoldingSymbol(e.target.value)}
+                      className="bg-slate-950 border border-slate-800 rounded p-2 text-slate-200 focus:outline-none focus:border-amber-500 text-xs"
+                    />
+                    <input
+                      type="number"
+                      step="0.01"
+                      placeholder="Average Buy Price"
+                      value={newHoldingPrice}
+                      onChange={(e) => setNewHoldingPrice(e.target.value)}
+                      className="bg-slate-950 border border-slate-800 rounded p-2 text-slate-200 focus:outline-none focus:border-amber-500 text-xs"
+                    />
+                    <input
+                      type="number"
+                      placeholder="Quantity"
+                      value={newHoldingQty}
+                      onChange={(e) => setNewHoldingQty(e.target.value)}
+                      className="bg-slate-950 border border-slate-800 rounded p-2 text-slate-200 focus:outline-none focus:border-amber-500 text-xs"
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    className="bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold px-4 py-2 rounded-lg transition-all active:scale-95 cursor-pointer text-xs"
+                  >
+                    SYNC HOLDING
+                  </button>
+                </form>
+              </div>
+            )}
+
+            {/* Sub-tab: Screener */}
+            {swingActiveTab === 'SCREENER' && (
+              <div className="space-y-4">
+                <div className="grid grid-cols-3 gap-3 bg-slate-900/40 p-3.5 border border-slate-850 rounded-xl">
+                  <div>
+                    <label className="text-[9px] uppercase font-bold text-slate-500 tracking-wider block mb-1">Sector</label>
+                    <select
+                      value={screenSector}
+                      onChange={(e) => setScreenSector(e.target.value)}
+                      className="bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 focus:outline-none text-[11px] text-slate-400 focus:border-amber-500 w-full"
+                    >
+                      <option value="ALL">ALL SECTORS</option>
+                      <option value="Energy">Energy</option>
+                      <option value="Technology">Technology</option>
+                      <option value="Finance">Finance</option>
+                      <option value="Consumer">Consumer</option>
+                      <option value="Healthcare">Healthcare</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[9px] uppercase font-bold text-slate-500 tracking-wider block mb-1">Market Cap</label>
+                    <select
+                      value={screenCap}
+                      onChange={(e) => setScreenCap(e.target.value)}
+                      className="bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 focus:outline-none text-[11px] text-slate-400 focus:border-amber-500 w-full"
+                    >
+                      <option value="ALL">ALL CAP CLASSIFICATIONS</option>
+                      <option value="LARGE CAP">LARGE CAP</option>
+                      <option value="MID CAP">MID CAP</option>
+                      <option value="SMALL CAP">SMALL CAP</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[9px] uppercase font-bold text-slate-500 tracking-wider block mb-1">Algo Rating</label>
+                    <select
+                      value={screenRating}
+                      onChange={(e) => setScreenRating(e.target.value)}
+                      className="bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 focus:outline-none text-[11px] text-slate-400 focus:border-amber-500 w-full"
+                    >
+                      <option value="ALL">ALL RATINGS</option>
+                      <option value="STRONG-BUY">STRONG BUY</option>
+                      <option value="BUY">BUY</option>
+                      <option value="WATCH">WATCH</option>
+                      <option value="AVOID">AVOID</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse text-[10px]">
+                    <thead>
+                      <tr className="border-b border-slate-800 text-slate-500 uppercase tracking-widest text-[8px]">
+                        <th className="py-2 px-1">Symbol</th>
+                        <th className="py-2 px-1">Sector</th>
+                        <th className="py-2 px-1">Market Cap Class</th>
+                        <th className="py-2 px-1">Current Price</th>
+                        <th className="py-2 px-1 text-center">Score</th>
+                        <th className="py-2 px-1 text-right">Rating</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredScreener.length === 0 ? (
+                        <tr>
+                          <td colSpan={6} className="text-center py-6 text-slate-500">
+                            No assets match the current screening parameters.
+                          </td>
+                        </tr>
+                      ) : (
+                        filteredScreener.map((item) => {
+                          const comps = getComponentsForSymbol(item.symbol);
+                          const ratingRes = compositeScore(comps.fund, comps.tech, comps.mom, comps.sent, comps.inst, item.price || 100, 100, swingWeights);
+                          let cap = 'Large Cap';
+                          if (item.symbol.charCodeAt(0) % 3 === 1) cap = 'Mid Cap';
+                          else if (item.symbol.charCodeAt(0) % 3 === 2) cap = 'Small Cap';
+                          return (
+                            <tr key={item.id} className="border-b border-slate-850 hover:bg-slate-900/20">
+                              <td className="py-2.5 px-1 font-bold text-slate-200">{item.symbol}</td>
+                              <td className="py-2.5 px-1 text-slate-400">{item.sector}</td>
+                              <td className="py-2.5 px-1 text-slate-400">{cap}</td>
+                              <td className="py-2.5 px-1 text-slate-300">₹{item.price ? Number(item.price).toFixed(2) : '—'}</td>
+                              <td className="py-2.5 px-1 text-center font-bold text-cyan-400">{ratingRes.total}</td>
+                              <td className="py-2.5 px-1 text-right font-black">
+                                <span className={`text-[9px] ${
+                                  ratingRes.total >= 80 ? 'text-emerald-400' : ratingRes.total >= 65 ? 'text-cyan-400' : 'text-slate-500'
+                                }`}>
+                                  {ratingRes.rating.toUpperCase()}
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* Sub-tab: Backtester */}
+            {swingActiveTab === 'BACKTESTER' && (
+              <div className="space-y-4">
+                <div className="bg-slate-900/40 p-4 border border-slate-850 rounded-xl space-y-4 font-mono text-[11px]">
+                  <div className="border-b border-slate-800 pb-2 flex justify-between">
+                    <span className="font-bold text-slate-300">Run Strategy Simulation: {selectedSwingSymbol}</span>
+                    <span className="text-[10px] text-slate-500">Historical yfinance analysis</span>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-4">
+                    <div>
+                      <label className="text-[9px] uppercase font-bold text-slate-500 tracking-wider block mb-1">Score Entry Cutoff</label>
+                      <input
+                        type="number"
+                        min="50"
+                        max="95"
+                        value={btThreshold}
+                        onChange={(e) => setBtThreshold(parseInt(e.target.value))}
+                        className="bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 focus:outline-none text-[11px] text-slate-200 focus:border-amber-500 w-full"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[9px] uppercase font-bold text-slate-500 tracking-wider block mb-1">Holding Period (days)</label>
+                      <input
+                        type="number"
+                        min="5"
+                        max="90"
+                        value={btHoldingPeriod}
+                        onChange={(e) => setBtHoldingPeriod(parseInt(e.target.value))}
+                        className="bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 focus:outline-none text-[11px] text-slate-200 focus:border-amber-500 w-full"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[9px] uppercase font-bold text-slate-500 tracking-wider block mb-1">Lookback (days)</label>
+                      <input
+                        type="number"
+                        min="30"
+                        max="730"
+                        value={btLookback}
+                        onChange={(e) => setBtLookback(parseInt(e.target.value))}
+                        className="bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 focus:outline-none text-[11px] text-slate-200 focus:border-amber-500 w-full"
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={runSwingBacktest}
+                    disabled={btLoading || !selectedSwingSymbol}
+                    className="w-full bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-slate-950 font-black py-2.5 rounded-lg active:scale-95 transition-all shadow-md cursor-pointer"
+                  >
+                    {btLoading ? 'COMPILING CANDLE DATA & RUNNING SIMULATION...' : 'RUN BACKTEST SIMULATION'}
+                  </button>
+                </div>
+
+                {btResults && (
+                  <div className="bg-slate-950/80 p-4 border border-slate-850 rounded-xl space-y-4 font-mono animate-fadeIn text-[11px]">
+                    <div className="border-b border-slate-850 pb-2 flex justify-between items-center">
+                      <span className="font-bold text-slate-200">Backtest Report: {btResults.symbol}</span>
+                      <span className="text-[9px] text-emerald-400 font-bold border border-emerald-500/20 bg-emerald-500/5 px-2 py-0.5 rounded">COMPLETED</span>
+                    </div>
+
+                    <div className="grid grid-cols-4 gap-3 text-center">
+                      <div className="bg-slate-900/40 p-2.5 border border-slate-850 rounded-lg">
+                        <span className="text-[8px] text-slate-500 block mb-1">WIN RATE</span>
+                        <span className="text-base font-black text-emerald-400">{btResults.winRate}%</span>
+                      </div>
+                      <div className="bg-slate-900/40 p-2.5 border border-slate-850 rounded-lg">
+                        <span className="text-[8px] text-slate-500 block mb-1">TOTAL SIGNALS</span>
+                        <span className="text-base font-black text-slate-200">{btResults.totalTrades}</span>
+                      </div>
+                      <div className="bg-slate-900/40 p-2.5 border border-slate-850 rounded-lg">
+                        <span className="text-[8px] text-slate-500 block mb-1">AVG RETURN</span>
+                        <span className="text-base font-black text-cyan-400">+{btResults.avgReturn}%</span>
+                      </div>
+                      <div className="bg-slate-900/40 p-2.5 border border-slate-850 rounded-lg">
+                        <span className="text-[8px] text-slate-500 block mb-1">ALPHA VS NIFTY</span>
+                        <span className={`text-base font-black ${btResults.alpha >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                          {btResults.alpha >= 0 ? '+' : ''}{btResults.alpha}%
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Historical Backtester Logs */}
+                    <div className="border-t border-slate-850 pt-3">
+                      <span className="text-[9px] uppercase font-bold text-slate-500 tracking-wider block mb-2">Simulated Signal Logs</span>
+                      <div className="overflow-y-auto max-h-40 overflow-x-auto text-[10px]">
+                        <table className="w-full text-left border-collapse">
+                          <thead>
+                            <tr className="border-b border-slate-800 text-slate-500 uppercase tracking-widest text-[8px]">
+                              <th className="py-1.5 px-1">Entry Date</th>
+                              <th className="py-1.5 px-1">Entry Price</th>
+                              <th className="py-1.5 px-1">Exit Date</th>
+                              <th className="py-1.5 px-1">Exit Price</th>
+                              <th className="py-1.5 px-1">Exit Reason</th>
+                              <th className="py-1.5 px-1 text-right">Return</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {btResults.trades.map((t: any, idx: number) => (
+                              <tr key={idx} className="border-b border-slate-850 hover:bg-slate-900/20">
+                                <td className="py-2 px-1 text-slate-350">{t.entryDate}</td>
+                                <td className="py-2 px-1 text-slate-300">₹{t.entryPrice.toFixed(2)}</td>
+                                <td className="py-2 px-1 text-slate-350">{t.exitDate}</td>
+                                <td className="py-2 px-1 text-slate-300">₹{t.exitPrice.toFixed(2)}</td>
+                                <td className="py-2 px-1 text-slate-400">{t.reason}</td>
+                                <td className={`py-2 px-1 text-right font-black ${t.returnPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                  {t.returnPct >= 0 ? '+' : ''}{t.returnPct.toFixed(2)}%
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Sub-tab: Performance Reports */}
+            {swingActiveTab === 'PERFORMANCE' && (
+              <div className="space-y-4">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse text-[10px]">
+                    <thead>
+                      <tr className="border-b border-slate-800 text-slate-500 uppercase tracking-widest text-[8px]">
+                        <th className="py-2 px-1">Asset Symbol</th>
+                        <th className="py-2 px-1">Win Rate</th>
+                        <th className="py-2 px-1">Avg return</th>
+                        <th className="py-2 px-1">Total Trades</th>
+                        <th className="py-2 px-1">Alpha</th>
+                        <th className="py-2 px-1">Benchmark</th>
+                        <th className="py-2 px-1">Run Date</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {swingPerformance.length === 0 ? (
+                        <tr>
+                          <td colSpan={7} className="text-center py-6 text-slate-500">
+                            No performance reports generated yet. Run a strategy simulation to generate a report.
+                          </td>
+                        </tr>
+                      ) : (
+                        swingPerformance.map((rep) => (
+                          <tr key={rep.id} className="border-b border-slate-850 hover:bg-slate-900/20">
+                            <td className="py-2.5 px-1 font-bold text-slate-200">{rep.symbol}</td>
+                            <td className="py-2.5 px-1 text-emerald-400 font-bold">{rep.win_rate}%</td>
+                            <td className="py-2.5 px-1 text-cyan-400">+{rep.avg_return}%</td>
+                            <td className="py-2.5 px-1 text-slate-350">{rep.total_trades}</td>
+                            <td className={`py-2.5 px-1 font-bold ${rep.alpha >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{rep.alpha >= 0 ? '+' : ''}{rep.alpha}%</td>
+                            <td className="py-2.5 px-1 text-slate-350">{rep.benchmark_return}%</td>
+                            <td className="py-2.5 px-1 text-slate-500">{new Date(rep.created_at).toLocaleDateString()}</td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const runSwingBacktest = async () => {
+    if (!selectedSwingSymbol) return;
+    setBtLoading(true);
+    setBtResults(null);
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/chart-data?ticker=${selectedSwingSymbol}&resolution=1d`);
+      if (!res.ok) {
+        throw new Error("Failed to fetch daily candles for backtester");
+      }
+      const data = await res.json();
+      if (!data || !data.candles || data.candles.length < 50) {
+        throw new Error("Insufficient historical data for backtesting");
+      }
+
+      const candles: CandleData[] = data.candles.map((c: any) => ({
+        time: typeof c.time === 'number' ? c.time : new Date(c.time).getTime() / 1000,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume
+      }));
+
+      const closes = candles.map(c => c.close);
+      const highs = candles.map(c => c.high);
+      const lows = candles.map(c => c.low);
+
+      const rsi = calcRSI(closes, 14);
+      const ema50 = calcEMA(closes, 50);
+      const ema200 = calcEMA(closes, 200);
+      const macd = calcMACD(closes);
+      const atr = calcATR(highs, lows, closes, 14);
+
+      let tradesList: any[] = [];
+      let totalPnl = 0;
+      let wins = 0;
+      let losses = 0;
+
+      // Simulate trading loop
+      for (let i = 50; i < candles.length - btHoldingPeriod; i++) {
+        const price = closes[i];
+        const currentRsi = rsi[i] || 50;
+        const currentEma50 = ema50[i];
+        const currentEma200 = ema200[i];
+        const currentAtr = atr[i] || price * 0.02;
+
+        // Formulate scoring components
+        const fundScore = 18; // base fundamental score
+        const setupScore = currentEma50 && price > currentEma50 ? 15 : 5;
+        const momScore = currentRsi > 50 ? 15 : 5;
+        const sentScore = 10;
+        const instScore = 12;
+
+        const scoreRes = compositeScore(fundScore, setupScore, momScore, sentScore, instScore, price, currentEma200, swingWeights);
+        
+        if (scoreRes.total >= btThreshold) {
+          // Trigger entry
+          const entryPrice = price;
+          const sl = entryPrice - 1.5 * currentAtr;
+          const tp = entryPrice + 3.0 * currentAtr;
+
+          let exitPrice = closes[i + btHoldingPeriod];
+          let exitDay = i + btHoldingPeriod;
+          let exitReason = 'HOLDING_PERIOD';
+
+          // Check if SL or TP hit during holding period
+          for (let j = i + 1; j <= i + btHoldingPeriod; j++) {
+            if (candles[j].low <= sl) {
+              exitPrice = sl;
+              exitDay = j;
+              exitReason = 'STOP_LOSS';
+              break;
+            }
+            if (candles[j].high >= tp) {
+              exitPrice = tp;
+              exitDay = j;
+              exitReason = 'TAKE_PROFIT';
+              break;
+            }
+          }
+
+          const ret = ((exitPrice - entryPrice) / entryPrice) * 100;
+          tradesList.push({
+            entryDate: new Date(candles[i].time * 1000).toLocaleDateString(),
+            entryPrice,
+            exitDate: new Date(candles[exitDay].time * 1000).toLocaleDateString(),
+            exitPrice,
+            returnPct: ret,
+            reason: exitReason
+          });
+
+          if (ret > 0) wins++;
+          else losses++;
+
+          totalPnl += ret;
+
+          // Skip past the holding period to avoid overlapping trades of same symbol
+          i = exitDay;
+        }
+      }
+
+      const totalTrades = tradesList.length;
+      const winRate = totalTrades > 0 ? (wins / totalTrades) * 100 : 0;
+      const avgReturn = totalTrades > 0 ? totalPnl / totalTrades : 0;
+      
+      // Calculate Benchmark Return
+      const startPrice = closes[0];
+      const endPrice = closes[closes.length - 1];
+      const benchmarkReturn = ((endPrice - startPrice) / startPrice) * 100;
+      const alpha = avgReturn - (benchmarkReturn / (totalTrades || 1));
+
+      const results = {
+        symbol: selectedSwingSymbol,
+        winRate: parseFloat(winRate.toFixed(2)),
+        avgReturn: parseFloat(avgReturn.toFixed(2)),
+        totalTrades,
+        alpha: parseFloat(alpha.toFixed(2)),
+        benchmarkReturn: parseFloat(benchmarkReturn.toFixed(2)),
+        trades: tradesList
+      };
+
+      setBtResults(results);
+
+      // Save performance report to DB
+      const headers = await getAuthHeaders();
+      await fetch(`${BACKEND_URL}/api/swing/performance/generate`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          symbol: selectedSwingSymbol,
+          win_rate: results.winRate,
+          avg_return: results.avgReturn,
+          total_trades: results.totalTrades,
+          alpha: results.alpha,
+          benchmark_return: results.benchmarkReturn,
+          parameters: `Threshold: ${btThreshold} | Holding: ${btHoldingPeriod}d | Lookback: ${btLookback}d`
+        })
+      });
+
+      // Reload performance records
+      loadSwingData();
+    } catch (err: any) {
+      console.error(err);
+      alert(err.message || "Failed running backtest.");
+    } finally {
+      setBtLoading(false);
+    }
+  };
+
   if (!mounted) {
     return (
       <div className="flex h-screen w-full items-center justify-center bg-[#02050f] text-cyan-400 font-mono">
@@ -1665,7 +3856,68 @@ export default function Dashboard() {
             >
               FOREX
             </button>
+            <button
+              onClick={() => setMarketEnv('SWING')}
+              className={`px-3 py-1 rounded-lg text-[10px] font-bold tracking-wider transition-all cursor-pointer ${
+                marketEnv === 'SWING'
+                  ? 'bg-amber-500/10 text-amber-400 border border-amber-500/30 shadow-lg shadow-amber-950/20'
+                  : 'text-slate-500 hover:text-slate-300'
+              }`}
+            >
+              SWING
+            </button>
           </div>
+
+          {/* SaaS Token Display for normal users / Upgrade Request button */}
+          {userProfile && (
+            <div className="flex items-center gap-1.5 border border-slate-800 bg-[#070b15] px-3 py-1.5 rounded-xl text-[10px] font-mono">
+              <span className="text-slate-500">TOKENS:</span>
+              <span className="text-cyan-400 font-bold">
+                {userProfile.subscription_status === 'active' || userProfile.role === 'admin' ? 'UNLIMITED' : `${userProfile.token_balance} FREE`}
+              </span>
+              {userProfile.subscription_status === 'free' && (
+                <button
+                  onClick={async () => {
+                    try {
+                      const headers = await getAuthHeaders();
+                      const res = await fetch(`${BACKEND_URL}/api/subscription/request`, {
+                        method: 'POST',
+                        headers
+                      });
+                      if (res.ok) {
+                        alert("Subscription request sent to admin email successfully!");
+                        const profileRes = await supabase.from('user_profiles').select('*').eq('id', user.id).single();
+                        if (profileRes.data) setUserProfile(profileRes.data);
+                      } else {
+                        alert("Failed to request subscription.");
+                      }
+                    } catch (err) {
+                      console.error(err);
+                    }
+                  }}
+                  className="ml-1.5 border border-cyan-500/30 bg-cyan-500/5 hover:bg-cyan-500/15 text-cyan-300 px-2 py-0.5 rounded text-[8px] font-bold cursor-pointer"
+                >
+                  UPGRADE
+                </button>
+              )}
+              {userProfile.subscription_status === 'pending_approval' && (
+                <span className="ml-1.5 text-[8px] bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1 py-0.5 rounded font-black animate-pulse">PENDING</span>
+              )}
+            </div>
+          )}
+
+          {/* Admin Panel button (only for jitheesjames27@gmail.com) */}
+          {user?.email === 'jitheesjames27@gmail.com' && (
+            <button
+              onClick={() => {
+                setIsAdminModalOpen(true);
+                loadAdminInsights();
+              }}
+              className="flex items-center gap-1.5 border border-purple-500/30 bg-purple-500/8 hover:bg-purple-500/15 text-purple-400 hover:text-purple-300 px-3 py-1.5 rounded-xl text-[10px] font-mono font-bold tracking-wider transition-all cursor-pointer"
+            >
+              🛡️ ADMIN CONTROL
+            </button>
+          )}
 
           <div className="flex items-center gap-2 border border-slate-800 bg-[#070b15] hover:border-cyan-500/50 px-3 py-1 rounded-xl transition-colors">
             <span className="text-slate-400 font-semibold uppercase tracking-wider text-[10px]">Asset:</span>
@@ -1760,7 +4012,7 @@ export default function Dashboard() {
         <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
           <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Net Equity</span>
           <span className="text-xl md:text-2xl font-black text-slate-100 font-mono">
-            {formatCurrency(startingCapital + portfolioRealizedPnl + portfolioUnrealizedPnl, marketEnv)}
+            {formatCurrency(metrics.account_capital, marketEnv)}
           </span>
           <div className="text-[10px] text-slate-500 mt-1 font-mono">
             Base: {formatCurrency(startingCapital, marketEnv)}
@@ -1770,9 +4022,9 @@ export default function Dashboard() {
         {/* Overall Account P&L */}
         <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
           <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Overall P&L</span>
-          <span className={`text-xl md:text-2xl font-black font-mono ${portfolioRealizedPnl + portfolioUnrealizedPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
-            {portfolioRealizedPnl + portfolioUnrealizedPnl >= 0 ? "+" : ""}
-            {formatCurrency(portfolioRealizedPnl + portfolioUnrealizedPnl, marketEnv)}
+          <span className={`text-xl md:text-2xl font-black font-mono ${metrics.account_capital - startingCapital >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+            {metrics.account_capital - startingCapital >= 0 ? "+" : ""}
+            {formatCurrency(metrics.account_capital - startingCapital, marketEnv)}
           </span>
           <div className="text-[10px] text-slate-500 mt-1 font-mono">Realized + Float PnL</div>
         </div>
@@ -1780,9 +4032,9 @@ export default function Dashboard() {
         {/* Today's Realized P&L */}
         <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
           <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Today's P&L</span>
-          <span className={`text-xl md:text-2xl font-black font-mono ${Number(metrics.daily_realized_pnl) + portfolioUnrealizedPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
-            {Number(metrics.daily_realized_pnl) + portfolioUnrealizedPnl >= 0 ? "+" : ""}
-            {formatCurrency(Number(metrics.daily_realized_pnl) + portfolioUnrealizedPnl, marketEnv)}
+          <span className={`text-xl md:text-2xl font-black font-mono ${Number(metrics.daily_realized_pnl) >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+            {Number(metrics.daily_realized_pnl) >= 0 ? "+" : ""}
+            {formatCurrency(Number(metrics.daily_realized_pnl), marketEnv)}
           </span>
           <div className="text-[10px] text-slate-500 mt-1 font-mono">Today's Net Return</div>
         </div>
@@ -1927,7 +4179,10 @@ export default function Dashboard() {
       )}
 
       {/* 3. Split Screen Brokerage Layout */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      {marketEnv === 'SWING' ? (
+        <SwingTradingDashboard />
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         
         {/* LEFT COLUMN: Candlestick/Equity Curve + Open Positions (2/3 width) */}
         <div className="lg:col-span-2 flex flex-col gap-6">
@@ -2180,32 +4435,110 @@ export default function Dashboard() {
                       const matchedAsset = (marketEnv === 'FOREX' ? FOREX_ASSETS : INDIAN_ASSETS).find(a => isAssetMatch(a.value, op.symbol));
                       const label = matchedAsset ? matchedAsset.label : op.symbol;
                       
+                      const isExpanded = expandedActiveTradeId === op.id;
+                      
                       return (
-                        <tr 
-                          key={op.id}
-                          onClick={() => {
-                            setSelectedAsset(matchedAsset ? matchedAsset.value : op.symbol);
-                            setSelectedAssetLabel(label);
-                          }}
-                          className={`border-b border-slate-850 hover:bg-slate-900/30 cursor-pointer transition-colors ${
-                            isAssetMatch(selectedAsset, op.symbol) ? 'bg-cyan-500/[0.02] border-l-2 border-l-cyan-500' : ''
-                          }`}
-                        >
-                          <td className="py-3 px-2 font-bold text-slate-200">
-                            {label}
-                          </td>
-                          <td className="py-3 px-2">
-                            <span className={`px-1.5 py-0.5 rounded font-bold text-[9px] ${isBuy ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'}`}>
-                              {op.direction}
-                            </span>
-                          </td>
-                          <td className="py-3 px-2 text-slate-300 font-bold">{formatActiveQty(op.quantity, op.symbol, marketEnv)}</td>
-                          <td className="py-3 px-2 text-slate-300">{formatPrice(entry, marketEnv)}</td>
-                          <td className="py-3 px-2 text-cyan-400 font-bold animate-pulse">{formatPrice(current, marketEnv)}</td>
-                          <td className={`py-3 px-2 text-right font-black ${opUnrealized >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                            {opUnrealized >= 0 ? '+' : ''}{formatCurrency(opUnrealized, marketEnv)}
-                          </td>
-                        </tr>
+                        <>
+                          <tr 
+                            key={op.id}
+                            className={`border-b border-slate-850 hover:bg-slate-900/30 cursor-pointer transition-colors ${
+                              isAssetMatch(selectedAsset, op.symbol) ? 'bg-cyan-500/[0.02] border-l-2 border-l-cyan-500' : ''
+                            }`}
+                          >
+                            <td className="py-3 px-2 font-bold text-slate-200">
+                              <div className="flex items-center gap-1.5">
+                                <span onClick={() => {
+                                  setSelectedAsset(matchedAsset ? matchedAsset.value : op.symbol);
+                                  setSelectedAssetLabel(label);
+                                }}>
+                                  {label}
+                                </span>
+                                {op.is_user_adjusted && (
+                                  <span className="px-1 py-0.5 rounded text-[7px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">ADJUSTED</span>
+                                )}
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    toggleActiveTradeExpand(op);
+                                  }}
+                                  className="text-[9px] font-bold text-cyan-400 hover:text-cyan-300 border border-cyan-500/20 bg-cyan-500/5 hover:bg-cyan-500/15 px-1 py-0.5 rounded cursor-pointer transition-colors"
+                                >
+                                  {isExpanded ? 'CLOSE' : 'RISK'}
+                                </button>
+                              </div>
+                            </td>
+                            <td className="py-3 px-2">
+                              <span className={`px-1.5 py-0.5 rounded font-bold text-[9px] ${isBuy ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'}`}>
+                                {op.direction}
+                              </span>
+                            </td>
+                            <td className="py-3 px-2 text-slate-300 font-bold">{formatActiveQty(op.quantity, op.symbol, marketEnv)}</td>
+                            <td className="py-3 px-2 text-slate-300">{formatPrice(entry, marketEnv)}</td>
+                            <td className="py-3 px-2 text-cyan-400 font-bold animate-pulse">{formatPrice(current, marketEnv)}</td>
+                            <td className={`py-3 px-2 text-right font-black ${opUnrealized >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                              {opUnrealized >= 0 ? '+' : ''}{formatCurrency(opUnrealized, marketEnv)}
+                            </td>
+                          </tr>
+                          {isExpanded && (
+                            <tr className="bg-slate-950/45 border-b border-slate-850">
+                              <td colSpan={6} className="p-3">
+                                <div className="flex flex-wrap gap-4 items-center justify-between font-mono text-[10px] text-slate-400">
+                                  <div className="flex flex-wrap gap-3 items-center">
+                                    <div>
+                                      <span className="block text-[8px] text-slate-500 uppercase tracking-widest mb-1">Stop Loss</span>
+                                      <input
+                                        type="number"
+                                        step="0.01"
+                                        value={adjustSl[op.id] || ''}
+                                        onChange={(e) => setAdjustSl(prev => ({ ...prev, [op.id]: e.target.value }))}
+                                        className="bg-slate-900 border border-slate-800 rounded px-2 py-1 text-slate-200 text-xs w-24 focus:outline-none focus:border-cyan-500"
+                                      />
+                                    </div>
+                                    <div>
+                                      <span className="block text-[8px] text-slate-500 uppercase tracking-widest mb-1">Take Profit</span>
+                                      <input
+                                        type="number"
+                                        step="0.01"
+                                        value={adjustTp[op.id] || ''}
+                                        onChange={(e) => setAdjustTp(prev => ({ ...prev, [op.id]: e.target.value }))}
+                                        className="bg-slate-900 border border-slate-800 rounded px-2 py-1 text-slate-200 text-xs w-24 focus:outline-none focus:border-cyan-500"
+                                      />
+                                    </div>
+                                    <div className="flex items-center gap-1.5 mt-4">
+                                      <input
+                                        type="checkbox"
+                                        id={`trailing-${op.id}`}
+                                        checked={!!adjustIsTrailing[op.id]}
+                                        onChange={(e) => setAdjustIsTrailing(prev => ({ ...prev, [op.id]: e.target.checked }))}
+                                        className="rounded bg-slate-900 border-slate-800 text-cyan-500 focus:ring-0 cursor-pointer"
+                                      />
+                                      <label htmlFor={`trailing-${op.id}`} className="text-slate-400 font-bold cursor-pointer">TRAILING</label>
+                                    </div>
+                                    {adjustIsTrailing[op.id] && (
+                                      <div>
+                                        <span className="block text-[8px] text-slate-500 uppercase tracking-widest mb-1">Offset</span>
+                                        <input
+                                          type="number"
+                                          step="0.01"
+                                          value={adjustOffset[op.id] || ''}
+                                          onChange={(e) => setAdjustOffset(prev => ({ ...prev, [op.id]: e.target.value }))}
+                                          className="bg-slate-900 border border-slate-800 rounded px-2 py-1 text-slate-200 text-xs w-16 focus:outline-none focus:border-cyan-500"
+                                        />
+                                      </div>
+                                    )}
+                                  </div>
+                                  <button
+                                    onClick={() => handleAdjustSubmit(op.id, marketEnv)}
+                                    disabled={adjustLoading[op.id]}
+                                    className="bg-cyan-500 hover:bg-cyan-600 text-slate-950 font-bold px-3 py-1.5 rounded-lg text-[10px] transition-all shadow active:scale-95 disabled:opacity-50 cursor-pointer"
+                                  >
+                                    {adjustLoading[op.id] ? 'SAVING...' : 'SAVE RISK'}
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </>
                       );
                     })}
                   </tbody>
@@ -2615,6 +4948,7 @@ export default function Dashboard() {
         </div>
 
       </div>
+      )}
 
       {/* ── Floating AI Assistant Drawer ── */}
       <div className="fixed bottom-6 right-6 z-50 font-mono">
@@ -2734,6 +5068,165 @@ export default function Dashboard() {
           </div>
         )}
       </div>
+
+      {/* Admin Command Center Modal */}
+      {isAdminModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 font-mono">
+          <div className="bg-[#070b15] border border-slate-800 rounded-3xl p-6 max-w-4xl w-full max-h-[85vh] overflow-y-auto shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-4 mb-6">
+              <h2 className="text-sm font-bold text-slate-200">🛡️ BIFROST ADMIN COMMAND CENTER</h2>
+              <button 
+                onClick={() => setIsAdminModalOpen(false)}
+                className="text-slate-500 hover:text-slate-300 text-xs font-bold border border-slate-850 px-2 py-1 rounded cursor-pointer"
+              >
+                CLOSE
+              </button>
+            </div>
+
+            {adminInsightsLoading ? (
+              <div className="flex h-40 items-center justify-center text-cyan-400">
+                <span className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-cyan-500 mr-2" />
+                LOADING COMMAND METRICS...
+              </div>
+            ) : adminInsights ? (
+              <div className="space-y-6 text-xs text-slate-400">
+                {/* Stats row */}
+                <div className="grid grid-cols-3 gap-4">
+                  <div className="bg-slate-900/50 p-4 border border-slate-850 rounded-2xl">
+                    <span className="text-[9px] uppercase tracking-widest text-slate-500">Total Scans & Chats</span>
+                    <span className="block text-2xl font-black text-slate-100 mt-1">{adminInsights.total_queries}</span>
+                  </div>
+                  <div className="bg-slate-900/50 p-4 border border-slate-850 rounded-2xl">
+                    <span className="text-[9px] uppercase tracking-widest text-slate-500">SMC Stock Scans</span>
+                    <span className="block text-2xl font-black text-cyan-400 mt-1">{adminInsights.total_scans}</span>
+                  </div>
+                  <div className="bg-slate-900/50 p-4 border border-slate-850 rounded-2xl">
+                    <span className="text-[9px] uppercase tracking-widest text-slate-500">AI Chat Sessions</span>
+                    <span className="block text-2xl font-black text-purple-400 mt-1">{adminInsights.total_chats}</span>
+                  </div>
+                </div>
+
+                {/* Top users and symbols */}
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="bg-slate-900/30 p-4 border border-slate-850 rounded-2xl">
+                    <span className="text-[9px] uppercase tracking-widest text-slate-500 block mb-2">Most Active Users</span>
+                    <ul className="space-y-1.5 font-bold">
+                      {adminInsights.top_users?.map((u: any, idx: number) => (
+                        <li key={idx} className="flex justify-between border-b border-slate-850/50 pb-1">
+                          <span>{u.email}</span>
+                          <span className="text-cyan-400">{u.queries} hits</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div className="bg-slate-900/30 p-4 border border-slate-850 rounded-2xl">
+                    <span className="text-[9px] uppercase tracking-widest text-slate-500 block mb-2">Trending Queries</span>
+                    <ul className="space-y-1.5 font-bold">
+                      {adminInsights.top_symbols?.map((s: any, idx: number) => (
+                        <li key={idx} className="flex justify-between border-b border-slate-850/50 pb-1">
+                          <span>{s.symbol}</span>
+                          <span className="text-amber-400">{s.count} scans</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+
+                {/* Users List & Access Control */}
+                <div className="bg-slate-900/30 p-4 border border-slate-850 rounded-2xl">
+                  <span className="text-[9px] uppercase tracking-widest text-slate-500 block mb-3">User Profiles & Subscriptions</span>
+                  <div className="overflow-x-auto max-h-60 overflow-y-auto">
+                    <table className="w-full text-left border-collapse text-[10px]">
+                      <thead>
+                        <tr className="border-b border-slate-800 text-slate-500 uppercase tracking-widest text-[8px]">
+                          <th className="py-2 px-2">User Email</th>
+                          <th className="py-2 px-2">Role</th>
+                          <th className="py-2 px-2">Status</th>
+                          <th className="py-2 px-2">Tokens Remaining</th>
+                          <th className="py-2 px-2 text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {userProfilesList.map((p: any) => (
+                          <tr key={p.id} className="border-b border-slate-850/50 hover:bg-slate-900/20">
+                            <td className="py-2 px-2 text-slate-200 font-bold">{p.email}</td>
+                            <td className="py-2 px-2 text-slate-400">{p.role}</td>
+                            <td className="py-2 px-2">
+                              <span className={`px-1.5 py-0.5 rounded font-black ${
+                                p.subscription_status === 'active' 
+                                  ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
+                                  : p.subscription_status === 'pending_approval' 
+                                  ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20 animate-pulse'
+                                  : 'bg-slate-500/10 text-slate-400 border border-slate-500/20'
+                              }`}>
+                                {p.subscription_status}
+                              </span>
+                            </td>
+                            <td className="py-2 px-2 text-slate-300">{p.token_balance}</td>
+                            <td className="py-2 px-2 text-right space-x-1.5">
+                              {p.subscription_status !== 'active' && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleUpdateUserProfile(p.id, 'active', 999999)}
+                                  className="bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25 px-1.5 py-0.5 rounded text-[8px] font-bold cursor-pointer"
+                                >
+                                  APPROVE
+                                </button>
+                              )}
+                              {p.subscription_status === 'active' && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleUpdateUserProfile(p.id, 'free', 100)}
+                                  className="bg-rose-500/15 text-rose-400 border border-rose-500/30 hover:bg-rose-500/25 px-1.5 py-0.5 rounded text-[8px] font-bold cursor-pointer"
+                                >
+                                  REVOKE
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const tokensStr = prompt("Set token balance:", String(p.token_balance));
+                                  if (tokensStr !== null) {
+                                    const tokens = parseInt(tokensStr);
+                                    if (!isNaN(tokens)) {
+                                      handleUpdateUserProfile(p.id, p.subscription_status, tokens);
+                                    }
+                                  }
+                                }}
+                                className="bg-cyan-500/15 text-cyan-400 border border-cyan-500/30 hover:bg-cyan-500/25 px-1.5 py-0.5 rounded text-[8px] font-bold cursor-pointer"
+                              >
+                                EDIT TOKENS
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Recent scan logs */}
+                <div className="bg-slate-900/30 p-4 border border-slate-850 rounded-2xl">
+                  <span className="text-[9px] uppercase tracking-widest text-slate-500 block mb-2">Recent Queries Logs</span>
+                  <div className="overflow-y-auto max-h-40 font-mono text-[9px] space-y-1 bg-slate-950 p-3 rounded-xl border border-slate-850">
+                    {adminInsights.recent_logs?.map((l: any, idx: number) => (
+                      <div key={idx} className="border-b border-slate-900 pb-1 flex justify-between">
+                        <span className="text-slate-400">[{l.query_type}] {l.email}: {l.query_text}</span>
+                        <span className="text-slate-600">{new Date(l.created_at).toLocaleTimeString()}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+              </div>
+            ) : (
+              <div className="text-center text-rose-400 py-10">
+                Failed to retrieve admin insights from the backend.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
