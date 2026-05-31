@@ -1693,6 +1693,9 @@ export default function Dashboard() {
   // API Configuration settings states
   const [settingsGeminiKey, setSettingsGeminiKey] = useState('');
   const [settingsWhatsAppKey, setSettingsWhatsAppKey] = useState('');
+  const [settingsFyersId, setSettingsFyersId] = useState('');
+  const [settingsFyersPin, setSettingsFyersPin] = useState('');
+  const [settingsFyersTotpKey, setSettingsFyersTotpKey] = useState('');
   const [settingsLoading, setSettingsLoading] = useState(false);
 
   // Swing Trading States
@@ -1864,6 +1867,9 @@ export default function Dashboard() {
         const data = await res.json();
         setSettingsGeminiKey(data.gemini_api_key || '');
         setSettingsWhatsAppKey(data.whatsapp_apikey || '');
+        setSettingsFyersId(data.fyers_id || '');
+        setSettingsFyersPin(data.fyers_pin || '');
+        setSettingsFyersTotpKey(data.fyers_totp_key || '');
       }
     } catch (err) {
       console.error("Error loading settings:", err);
@@ -1880,11 +1886,14 @@ export default function Dashboard() {
         headers,
         body: JSON.stringify({
           gemini_api_key: settingsGeminiKey,
-          whatsapp_apikey: settingsWhatsAppKey
+          whatsapp_apikey: settingsWhatsAppKey,
+          fyers_id: settingsFyersId,
+          fyers_pin: settingsFyersPin,
+          fyers_totp_key: settingsFyersTotpKey
         })
       });
       if (res.ok) {
-        alert("API Settings updated successfully!");
+        alert("API & Fyers Settings updated successfully!");
         loadSettings();
       } else {
         const err = await res.json();
@@ -4272,6 +4281,16 @@ export default function Dashboard() {
             EXPORT
           </button>
 
+          {/* Global Kill Switch Button */}
+          <button
+            onClick={triggerKillAll}
+            title="EMERGENCY EXIT: Close All Positions"
+            className="flex items-center gap-1.5 border border-rose-500/40 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 px-3 py-1.5 rounded-lg text-[10px] font-mono font-bold tracking-wider transition-all cursor-pointer animate-pulse"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+            KILL SWITCH
+          </button>
+
           {/* User Avatar + Sign Out */}
           {user && (
             <div className="flex items-center gap-2">
@@ -5639,6 +5658,39 @@ export default function Dashboard() {
                         className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-emerald-500 transition-colors"
                       />
                       <span className="text-[8px] text-slate-500 mt-1 block">Used to deliver real-time trade signals and hourly logs to +91 9846278548.</span>
+                    </div>
+                    <div>
+                      <label className="text-[9px] text-slate-400 block mb-1">FYERS CLIENT ID (ID)</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. FAJ77193"
+                        value={settingsFyersId}
+                        onChange={(e) => setSettingsFyersId(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-cyan-500 transition-colors"
+                      />
+                      <span className="text-[8px] text-slate-500 mt-1 block">Your Fyers login ID. Required for token generation.</span>
+                    </div>
+                    <div>
+                      <label className="text-[9px] text-slate-400 block mb-1">FYERS LOGIN PIN (4 DIGIT)</label>
+                      <input
+                        type="password"
+                        placeholder="Enter 4-digit PIN"
+                        value={settingsFyersPin}
+                        onChange={(e) => setSettingsFyersPin(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-cyan-500 transition-colors"
+                      />
+                      <span className="text-[8px] text-slate-500 mt-1 block">Your Fyers 4-digit security PIN.</span>
+                    </div>
+                    <div className="col-span-2">
+                      <label className="text-[9px] text-slate-400 block mb-1">FYERS TOTP KEY (SECRET KEY)</label>
+                      <input
+                        type="password"
+                        placeholder="Enter 32-character TOTP secret key"
+                        value={settingsFyersTotpKey}
+                        onChange={(e) => setSettingsFyersTotpKey(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-cyan-500 transition-colors"
+                      />
+                      <span className="text-[8px] text-slate-500 mt-1 block">The base32 TOTP secret key from Fyers 2FA configuration to refresh tokens automatically.</span>
                     </div>
                   </div>
                   <div className="flex justify-end">
