@@ -1894,7 +1894,11 @@ export default function Dashboard() {
 
       const res = await fetch(`${BACKEND_URL}/api/trade/adjust`, {
         method: 'POST',
-        headers,
+        headers: {
+          ...headers,
+          'Content-Type': 'application/json',
+          'X-Trade-Mode': tradeMode
+        },
         body: JSON.stringify({
           trade_id: tradeId,
           market_type: marketType,
@@ -2289,6 +2293,20 @@ export default function Dashboard() {
       let queryUserId = user?.id;
       const isAdmin = userProfile?.role === 'admin';
       const isIntegrated = brokerSettings?.integrated;
+
+      if (tradeMode === 'LIVE' && !isIntegrated && !isAdmin) {
+        setTrades([]);
+        setMetrics({
+          account_capital: 0.0,
+          win_rate: 0.0,
+          net_profit: 0.0,
+          active_allocations: 0,
+          safety_state: "SAFE",
+          daily_realized_pnl: 0.0,
+          total_trades: 0
+        });
+        return;
+      }
 
       if (user && !isAdmin && !isIntegrated) {
         const { data: adminProfiles } = await supabase
@@ -5231,14 +5249,28 @@ export default function Dashboard() {
               <InlinePremiumUpgradeBlocker feature="Custom Stock Scanner" onRequestUpgrade={requestPremiumUpgrade} />
             ) : (
               <>
-                <form onSubmit={runCustomScan} className="flex gap-2 mb-4 font-mono">
-                  <input
-                    type="text"
-                    placeholder="e.g. SBIN.NS, TCS.NS, GC=F"
-                    value={customScanTicker}
-                    onChange={(e) => setCustomScanTicker(e.target.value)}
-                    className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs font-bold text-slate-200 focus:outline-none focus:border-cyan-500 placeholder:text-slate-600 transition-colors"
-                  />
+                <form onSubmit={runCustomScan} className="flex items-center gap-2 mb-4 font-mono">
+                  <div className="flex-1 relative flex items-center">
+                    <input
+                      type="text"
+                      placeholder="e.g. SBIN.NS, TCS.NS, GC=F"
+                      value={customScanTicker}
+                      onChange={(e) => setCustomScanTicker(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-800 rounded-xl pl-3 pr-14 py-2 text-xs font-bold text-slate-200 focus:outline-none focus:border-cyan-500 placeholder:text-slate-600 transition-colors"
+                    />
+                    {customScanTicker && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCustomScanTicker('');
+                          setCustomScanResult(null);
+                        }}
+                        className="absolute right-2 text-slate-500 hover:text-slate-300 font-bold text-[9px] uppercase tracking-wider bg-slate-950/40 hover:bg-slate-900 px-1.5 py-0.5 rounded cursor-pointer border-0"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
                   <button
                     type="submit"
                     disabled={customScanLoading}
@@ -5797,14 +5829,25 @@ export default function Dashboard() {
                 </div>
 
                 {/* Input Form */}
-                <form onSubmit={sendChatMessage} className="p-3 border-t border-slate-800/80 bg-slate-950/40 flex gap-2 shrink-0">
-                  <input
-                    type="text"
-                    placeholder="Ask Bifrost AI..."
-                    value={chatInput}
-                    onChange={(e) => setChatInput(e.target.value)}
-                    className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-cyan-500 placeholder:text-slate-600 transition-colors font-bold"
-                  />
+                <form onSubmit={sendChatMessage} className="p-3 border-t border-slate-800/80 bg-slate-950/40 flex items-center gap-2 shrink-0">
+                  <div className="flex-1 relative flex items-center">
+                    <input
+                      type="text"
+                      placeholder="Ask Bifrost AI..."
+                      value={chatInput}
+                      onChange={(e) => setChatInput(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-800 rounded-xl pl-3 pr-14 py-2 text-xs text-slate-200 focus:outline-none focus:border-cyan-500 placeholder:text-slate-600 transition-colors font-bold"
+                    />
+                    {chatInput && (
+                      <button
+                        type="button"
+                        onClick={() => setChatInput('')}
+                        className="absolute right-2 text-slate-500 hover:text-slate-355 font-bold text-[9px] uppercase tracking-wider bg-slate-950/40 hover:bg-slate-900 px-1.5 py-0.5 rounded cursor-pointer border-0"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
                   <button
                     type="submit"
                     disabled={chatLoading}
