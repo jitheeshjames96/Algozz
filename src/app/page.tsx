@@ -1874,8 +1874,16 @@ export default function Dashboard() {
     setAdjustLoading(prev => ({ ...prev, [tradeId]: true }));
     try {
       const headers = await getAuthHeaders();
-      const sl = parseFloat(adjustSl[tradeId]);
-      const tp = parseFloat(adjustTp[tradeId]);
+      const matchedTrade = trades.find(t => t.id === tradeId);
+      const parsed = matchedTrade ? parseSlTpFromLogic(matchedTrade.setup_logic || "") : null;
+      const fallbackSl = matchedTrade ? (matchedTrade.stop_loss || (parsed ? parsed.sl : 0)) : 0;
+      const fallbackTp = matchedTrade ? (matchedTrade.take_profit || (parsed ? parsed.tp : 0)) : 0;
+
+      const slInput = adjustSl[tradeId] !== undefined ? adjustSl[tradeId] : String(fallbackSl);
+      const tpInput = adjustTp[tradeId] !== undefined ? adjustTp[tradeId] : String(fallbackTp);
+
+      const sl = parseFloat(slInput);
+      const tp = parseFloat(tpInput);
       const isTrailing = !!adjustIsTrailing[tradeId];
       const offset = parseFloat(adjustOffset[tradeId] || '0');
 
@@ -2311,7 +2319,13 @@ export default function Dashboard() {
       // 2. Fetch trades from Supabase
       let tradesQuery = supabase.from(tradesTable).select('*');
       if (queryUserId) {
-        tradesQuery = tradesQuery.eq('user_id', queryUserId);
+        if (isAdmin || isIntegrated) {
+          tradesQuery = tradesQuery.eq('user_id', queryUserId);
+        } else {
+          tradesQuery = tradesQuery.or(`user_id.eq.${queryUserId},user_id.is.null`);
+        }
+      } else {
+        tradesQuery = tradesQuery.is('user_id', null);
       }
       
       const { data: tradesData, error: tradesError } = await tradesQuery.order('entry_time', { ascending: false });
@@ -4202,6 +4216,15 @@ export default function Dashboard() {
     }
   };
 
+
+  const currentSlValStr = adjustSl[openPosition?.id || ''] !== undefined 
+    ? adjustSl[openPosition?.id || ''] 
+    : String(openPosition?.stop_loss || (openPosition ? (parseSlTpFromLogic(openPosition.setup_logic || "")?.sl || 0) : 0));
+
+  const currentTpValStr = adjustTp[openPosition?.id || ''] !== undefined 
+    ? adjustTp[openPosition?.id || ''] 
+    : String(openPosition?.take_profit || (openPosition ? (parseSlTpFromLogic(openPosition.setup_logic || "")?.tp || 0) : 0));
+
   if (!mounted) {
     return (
       <div className="flex h-screen w-full items-center justify-center bg-[#02050f] text-cyan-400 font-mono">
@@ -4430,98 +4453,178 @@ export default function Dashboard() {
       </header>
 
       {/* 2. Top-Line Metrics Grid */}
-      <section className="grid grid-cols-2 lg:grid-cols-7 gap-3 mb-6">
-        {/* Net Equity */}
-        <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
-          <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Net Equity</span>
-          <span className="text-xl md:text-2xl font-black text-slate-100 font-mono">
-            {formatCurrency(metrics.account_capital, marketEnv)}
-          </span>
-          <div className="text-[10px] text-slate-500 mt-1 font-mono">
-            Base: {formatCurrency(startingCapital, marketEnv)}
-          </div>
-        </div>
-
-        {/* Overall Account P&L */}
-        <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
-          <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Overall P&L</span>
-          <span className={`text-xl md:text-2xl font-black font-mono ${metrics.account_capital - startingCapital >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
-            {metrics.account_capital - startingCapital >= 0 ? "+" : ""}
-            {formatCurrency(metrics.account_capital - startingCapital, marketEnv)}
-          </span>
-          <div className="text-[10px] text-slate-500 mt-1 font-mono">Realized + Float PnL</div>
-        </div>
-
-        {/* Today's Realized P&L */}
-        <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
-          <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Today's P&L</span>
-          <span className={`text-xl md:text-2xl font-black font-mono ${Number(metrics.daily_realized_pnl) >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
-            {Number(metrics.daily_realized_pnl) >= 0 ? "+" : ""}
-            {formatCurrency(Number(metrics.daily_realized_pnl), marketEnv)}
-          </span>
-          <div className="text-[10px] text-slate-500 mt-1 font-mono">Today's Net Return</div>
-        </div>
-
-        {/* Unrealized P&L */}
-        <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
-          <div className="absolute top-3 right-3">
-            <span className="text-[9px] font-bold font-mono px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/25 animate-pulse">LIVE</span>
-          </div>
-          <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Unrealized P&L</span>
-          <span className={`text-xl md:text-2xl font-black font-mono ${portfolioUnrealizedPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
-            {portfolioUnrealizedPnl >= 0 ? "+" : ""}
-            {formatCurrency(portfolioUnrealizedPnl, marketEnv)}
-          </span>
-          <div className="text-[10px] text-slate-500 mt-1 font-mono">Active position float</div>
-        </div>
-
-        {/* Today's Trades — split card */}
-        <div className={`relative border rounded-2xl p-4 shadow-xl ${
-          dailyLimitReached ? 'border-amber-500/40 bg-amber-500/5' : 'border-slate-800 bg-[#070b15]/80'
-        }`}>
-          {dailyLimitReached && (
-            <div className="absolute top-2 right-2">
-              <span className="text-[8px] font-bold font-mono px-1 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/25 animate-pulse">LIMIT</span>
+      {marketEnv === 'SWING' ? (
+        <section className="grid grid-cols-2 lg:grid-cols-6 gap-3 mb-6">
+          {/* Net Portfolio Value */}
+          <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
+            <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Portfolio Value</span>
+            <span className="text-xl md:text-2xl font-black text-amber-400 font-mono">
+              ₹{swingHoldings.reduce((acc, h) => acc + ((livePrices[h.symbol] || Number(h.average_buy_price)) * Number(h.quantity)), 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </span>
+            <div className="text-[10px] text-slate-500 mt-1 font-mono">
+              Live Holdings Value
             </div>
-          )}
-          <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Today's Trades</span>
-          <span className={`text-xl md:text-2xl font-black font-mono ${dailyLimitReached ? 'text-amber-400' : 'text-slate-100'}`}>
-            {todayTradeCount}
-          </span>
-          <div className="text-[10px] mt-1 font-mono flex items-center justify-between">
-            <span className="text-slate-500">/ 2 daily limit</span>
-            <span className={`font-semibold ${dailyLimitReached ? 'text-amber-400' : 'text-emerald-400'}`}>
-              {dailyLimitReached ? 'MAXED' : 'OK'}
-            </span>
           </div>
-        </div>
 
-        {/* Total Trades (all-time) */}
-        <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
-          <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Total Trades</span>
-          <span className="text-xl md:text-2xl font-black text-slate-100 font-mono">
-            {trades.length}
-          </span>
-          <div className="text-[10px] text-slate-500 mt-1 font-mono flex items-center justify-between">
-            <span>All-Time Count</span>
-            <span className="text-cyan-400 font-semibold">{portfolioWinRate}% Win</span>
-          </div>
-        </div>
-
-        {/* Market Exposure */}
-        <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
-          <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Exposure</span>
-          <span className="text-xl md:text-2xl font-black text-slate-100 font-mono">
-            {activeTrades.length}
-          </span>
-          <div className="text-[10px] mt-1 font-mono flex items-center justify-between">
-            <span className="text-slate-500">Active</span>
-            <span className={metrics.safety_state === 'SAFE' ? 'text-emerald-400 font-semibold' : 'text-rose-400 font-black animate-pulse'}>
-              {metrics.safety_state}
+          {/* Total Invested */}
+          <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
+            <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Total Invested</span>
+            <span className="text-xl md:text-2xl font-black text-slate-100 font-mono">
+              ₹{swingHoldings.reduce((acc, h) => acc + (Number(h.average_buy_price) * Number(h.quantity)), 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </span>
+            <div className="text-[10px] text-slate-500 mt-1 font-mono">
+              Invested Capital
+            </div>
           </div>
-        </div>
-      </section>
+
+          {/* Unrealized Swing P&L */}
+          {(() => {
+            const invested = swingHoldings.reduce((acc, h) => acc + (Number(h.average_buy_price) * Number(h.quantity)), 0);
+            const value = swingHoldings.reduce((acc, h) => acc + ((livePrices[h.symbol] || Number(h.average_buy_price)) * Number(h.quantity)), 0);
+            const pnl = value - invested;
+            return (
+              <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
+                <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Portfolio P&L</span>
+                <span className={`text-xl md:text-2xl font-black font-mono ${pnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                  {pnl >= 0 ? "+" : ""}
+                  ₹{pnl.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </span>
+                <div className="text-[10px] text-slate-500 mt-1 font-mono">
+                  Floating Portfolio Return
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* Holdings Count */}
+          <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
+            <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Holdings</span>
+            <span className="text-xl md:text-2xl font-black text-slate-100 font-mono">
+              {swingHoldings.length}
+            </span>
+            <div className="text-[10px] text-slate-500 mt-1 font-mono">
+              Active Stock Positions
+            </div>
+          </div>
+
+          {/* Watchlist Size */}
+          <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
+            <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Watchlist Assets</span>
+            <span className="text-xl md:text-2xl font-black text-slate-100 font-mono">
+              {swingWatchlist.length}
+            </span>
+            <div className="text-[10px] text-slate-500 mt-1 font-mono">
+              Tracked Watchlist Count
+            </div>
+          </div>
+
+          {/* Avg Win Rate */}
+          <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
+            <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Avg Win Rate</span>
+            <span className="text-xl md:text-2xl font-black text-cyan-400 font-mono">
+              {swingPerformance.length > 0
+                ? (swingPerformance.reduce((acc, p) => acc + Number(p.win_rate), 0) / swingPerformance.length).toFixed(1)
+                : '0.0'}%
+            </span>
+            <div className="text-[10px] text-slate-500 mt-1 font-mono">
+              Historical Win Rate
+            </div>
+          </div>
+        </section>
+      ) : (
+        <section className="grid grid-cols-2 lg:grid-cols-7 gap-3 mb-6">
+          {/* Net Equity */}
+          <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
+            <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Net Equity</span>
+            <span className="text-xl md:text-2xl font-black text-slate-100 font-mono">
+              {formatCurrency(metrics.account_capital, marketEnv)}
+            </span>
+            <div className="text-[10px] text-slate-500 mt-1 font-mono">
+              Base: {formatCurrency(startingCapital, marketEnv)}
+            </div>
+          </div>
+
+          {/* Overall Account P&L */}
+          <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
+            <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Overall P&L</span>
+            <span className={`text-xl md:text-2xl font-black font-mono ${metrics.account_capital - startingCapital >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+              {metrics.account_capital - startingCapital >= 0 ? "+" : ""}
+              {formatCurrency(metrics.account_capital - startingCapital, marketEnv)}
+            </span>
+            <div className="text-[10px] text-slate-500 mt-1 font-mono">Realized + Float PnL</div>
+          </div>
+
+          {/* Today's Realized P&L */}
+          <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
+            <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Today's P&L</span>
+            <span className={`text-xl md:text-2xl font-black font-mono ${Number(metrics.daily_realized_pnl) >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+              {Number(metrics.daily_realized_pnl) >= 0 ? "+" : ""}
+              {formatCurrency(Number(metrics.daily_realized_pnl), marketEnv)}
+            </span>
+            <div className="text-[10px] text-slate-500 mt-1 font-mono">Today's Net Return</div>
+          </div>
+
+          {/* Unrealized P&L */}
+          <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
+            <div className="absolute top-3 right-3">
+              <span className="text-[9px] font-bold font-mono px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/25 animate-pulse">LIVE</span>
+            </div>
+            <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Unrealized P&L</span>
+            <span className={`text-xl md:text-2xl font-black font-mono ${portfolioUnrealizedPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+              {portfolioUnrealizedPnl >= 0 ? "+" : ""}
+              {formatCurrency(portfolioUnrealizedPnl, marketEnv)}
+            </span>
+            <div className="text-[10px] text-slate-500 mt-1 font-mono">Active position float</div>
+          </div>
+
+          {/* Today's Trades — split card */}
+          <div className={`relative border rounded-2xl p-4 shadow-xl ${
+            dailyLimitReached ? 'border-amber-500/40 bg-amber-500/5' : 'border-slate-800 bg-[#070b15]/80'
+          }`}>
+            {dailyLimitReached && (
+              <div className="absolute top-2 right-2">
+                <span className="text-[8px] font-bold font-mono px-1 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/25 animate-pulse">LIMIT</span>
+              </div>
+            )}
+            <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Today's Trades</span>
+            <span className={`text-xl md:text-2xl font-black font-mono ${dailyLimitReached ? 'text-amber-400' : 'text-slate-100'}`}>
+              {todayTradeCount}
+            </span>
+            <div className="text-[10px] mt-1 font-mono flex items-center justify-between">
+              <span className="text-slate-500">/ 2 daily limit</span>
+              <span className={`font-semibold ${dailyLimitReached ? 'text-amber-400' : 'text-emerald-400'}`}>
+                {dailyLimitReached ? 'MAXED' : 'OK'}
+              </span>
+            </div>
+          </div>
+
+          {/* Total Trades (all-time) */}
+          <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
+            <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Total Trades</span>
+            <span className="text-xl md:text-2xl font-black text-slate-100 font-mono">
+              {trades.length}
+            </span>
+            <div className="text-[10px] text-slate-500 mt-1 font-mono flex items-center justify-between">
+              <span>All-Time Count</span>
+              <span className="text-cyan-400 font-semibold">{portfolioWinRate}% Win</span>
+            </div>
+          </div>
+
+          {/* Market Exposure */}
+          <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
+            <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Exposure</span>
+            <span className="text-xl md:text-2xl font-black text-slate-100 font-mono">
+              {activeTrades.length}
+            </span>
+            <div className="text-[10px] mt-1 font-mono flex items-center justify-between">
+              <span className="text-slate-500">Active</span>
+              <span className={metrics.safety_state === 'SAFE' ? 'text-emerald-400 font-semibold' : 'text-rose-400 font-black animate-pulse'}>
+                {metrics.safety_state}
+              </span>
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* Daily Limit Reached Banner */}
       {dailyLimitReached && !bannersDismissed['dailyLimit'] && (
@@ -4684,6 +4787,128 @@ export default function Dashboard() {
             {/* Price Candlestick Chart */}
             <div className={activeChartTab === 'PRICE' ? 'block' : 'hidden'}>
               <div ref={chartContainerRef} className="w-full h-[380px] rounded-xl overflow-hidden bg-[#090d16]" />
+              {openPosition && (userProfile?.role === 'admin' || brokerSettings?.integrated) && (
+                <div className="mt-3 p-3 bg-slate-950/60 rounded-xl border border-slate-850/80 font-mono text-[10px] text-slate-400 flex flex-wrap gap-4 items-center justify-between animate-fadeIn">
+                  <div className="flex items-center gap-2">
+                    <span className="h-2 w-2 rounded-full bg-cyan-500 animate-pulse" />
+                    <span className="font-bold text-slate-350 tracking-wider">SHIFTABLE RISK TARGETS:</span>
+                  </div>
+                  
+                  <div className="flex flex-wrap gap-4 items-center">
+                    {/* Stop Loss Shifter */}
+                    <div className="flex items-center gap-1 bg-slate-900/60 p-1 rounded-lg border border-slate-850">
+                      <span className="text-[8px] text-slate-500 uppercase tracking-widest font-bold px-1.5">SL</span>
+                      <button 
+                        onClick={() => {
+                          const mult = marketEnv === 'FOREX' ? 0.0001 : 1.0;
+                          const cur = parseFloat(currentSlValStr) || 0;
+                          setAdjustSl(prev => ({ ...prev, [openPosition.id]: String(Number((cur - 50 * mult).toFixed(marketEnv === 'FOREX' ? 5 : 2))) }));
+                        }}
+                        className="px-1.5 py-0.5 rounded bg-slate-850 hover:bg-slate-800 hover:text-white cursor-pointer font-bold text-[8px] border border-slate-800"
+                      >
+                        -50
+                      </button>
+                      <button 
+                        onClick={() => {
+                          const mult = marketEnv === 'FOREX' ? 0.0001 : 1.0;
+                          const cur = parseFloat(currentSlValStr) || 0;
+                          setAdjustSl(prev => ({ ...prev, [openPosition.id]: String(Number((cur - 10 * mult).toFixed(marketEnv === 'FOREX' ? 5 : 2))) }));
+                        }}
+                        className="px-1.5 py-0.5 rounded bg-slate-850 hover:bg-slate-800 hover:text-white cursor-pointer font-bold text-[8px] border border-slate-800"
+                      >
+                        -10
+                      </button>
+                      <input 
+                        type="number"
+                        step={marketEnv === 'FOREX' ? '0.0001' : '0.1'}
+                        value={currentSlValStr}
+                        onChange={(e) => setAdjustSl(prev => ({ ...prev, [openPosition.id]: e.target.value }))}
+                        className="bg-slate-950 border border-slate-850 rounded px-1 text-center text-rose-400 font-bold w-20 focus:outline-none focus:border-cyan-500 text-xs py-0.5"
+                      />
+                      <button 
+                        onClick={() => {
+                          const mult = marketEnv === 'FOREX' ? 0.0001 : 1.0;
+                          const cur = parseFloat(currentSlValStr) || 0;
+                          setAdjustSl(prev => ({ ...prev, [openPosition.id]: String(Number((cur + 10 * mult).toFixed(marketEnv === 'FOREX' ? 5 : 2))) }));
+                        }}
+                        className="px-1.5 py-0.5 rounded bg-slate-850 hover:bg-slate-800 hover:text-white cursor-pointer font-bold text-[8px] border border-slate-800"
+                      >
+                        +10
+                      </button>
+                      <button 
+                        onClick={() => {
+                          const mult = marketEnv === 'FOREX' ? 0.0001 : 1.0;
+                          const cur = parseFloat(currentSlValStr) || 0;
+                          setAdjustSl(prev => ({ ...prev, [openPosition.id]: String(Number((cur + 50 * mult).toFixed(marketEnv === 'FOREX' ? 5 : 2))) }));
+                        }}
+                        className="px-1.5 py-0.5 rounded bg-slate-850 hover:bg-slate-800 hover:text-white cursor-pointer font-bold text-[8px] border border-slate-800"
+                      >
+                        +50
+                      </button>
+                    </div>
+
+                    {/* Take Profit Shifter */}
+                    <div className="flex items-center gap-1 bg-slate-900/60 p-1 rounded-lg border border-slate-850">
+                      <span className="text-[8px] text-slate-500 uppercase tracking-widest font-bold px-1.5">TP</span>
+                      <button 
+                        onClick={() => {
+                          const mult = marketEnv === 'FOREX' ? 0.0001 : 1.0;
+                          const cur = parseFloat(currentTpValStr) || 0;
+                          setAdjustTp(prev => ({ ...prev, [openPosition.id]: String(Number((cur - 50 * mult).toFixed(marketEnv === 'FOREX' ? 5 : 2))) }));
+                        }}
+                        className="px-1.5 py-0.5 rounded bg-slate-850 hover:bg-slate-800 hover:text-white cursor-pointer font-bold text-[8px] border border-slate-800"
+                      >
+                        -50
+                      </button>
+                      <button 
+                        onClick={() => {
+                          const mult = marketEnv === 'FOREX' ? 0.0001 : 1.0;
+                          const cur = parseFloat(currentTpValStr) || 0;
+                          setAdjustTp(prev => ({ ...prev, [openPosition.id]: String(Number((cur - 10 * mult).toFixed(marketEnv === 'FOREX' ? 5 : 2))) }));
+                        }}
+                        className="px-1.5 py-0.5 rounded bg-slate-850 hover:bg-slate-800 hover:text-white cursor-pointer font-bold text-[8px] border border-slate-800"
+                      >
+                        -10
+                      </button>
+                      <input 
+                        type="number"
+                        step={marketEnv === 'FOREX' ? '0.0001' : '0.1'}
+                        value={currentTpValStr}
+                        onChange={(e) => setAdjustTp(prev => ({ ...prev, [openPosition.id]: e.target.value }))}
+                        className="bg-slate-950 border border-slate-850 rounded px-1 text-center text-emerald-400 font-bold w-20 focus:outline-none focus:border-cyan-500 text-xs py-0.5"
+                      />
+                      <button 
+                        onClick={() => {
+                          const mult = marketEnv === 'FOREX' ? 0.0001 : 1.0;
+                          const cur = parseFloat(currentTpValStr) || 0;
+                          setAdjustTp(prev => ({ ...prev, [openPosition.id]: String(Number((cur + 10 * mult).toFixed(marketEnv === 'FOREX' ? 5 : 2))) }));
+                        }}
+                        className="px-1.5 py-0.5 rounded bg-slate-850 hover:bg-slate-800 hover:text-white cursor-pointer font-bold text-[8px] border border-slate-800"
+                      >
+                        +10
+                      </button>
+                      <button 
+                        onClick={() => {
+                          const mult = marketEnv === 'FOREX' ? 0.0001 : 1.0;
+                          const cur = parseFloat(currentTpValStr) || 0;
+                          setAdjustTp(prev => ({ ...prev, [openPosition.id]: String(Number((cur + 50 * mult).toFixed(marketEnv === 'FOREX' ? 5 : 2))) }));
+                        }}
+                        className="px-1.5 py-0.5 rounded bg-slate-850 hover:bg-slate-800 hover:text-white cursor-pointer font-bold text-[8px] border border-slate-800"
+                      >
+                        +50
+                      </button>
+                    </div>
+
+                    <button 
+                      onClick={() => handleAdjustSubmit(openPosition.id, marketEnv)}
+                      disabled={adjustLoading[openPosition.id]}
+                      className="bg-cyan-500 hover:bg-cyan-600 text-slate-950 font-black px-3.5 py-1.5 rounded-lg text-[9px] tracking-wider transition-all shadow active:scale-95 disabled:opacity-50 cursor-pointer"
+                    >
+                      {adjustLoading[openPosition.id] ? 'SAVING...' : 'SAVE TARGETS'}
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Equity Curve Chart */}
@@ -5739,6 +5964,51 @@ export default function Dashboard() {
                   <div className="bg-slate-900/50 p-4 border border-slate-850 rounded-2xl">
                     <span className="text-[9px] uppercase tracking-widest text-slate-500">AI Chat Sessions</span>
                     <span className="block text-2xl font-black text-purple-400 mt-1">{adminInsights.total_chats}</span>
+                  </div>
+                </div>
+
+                {/* Live vs Mock Comparative Metrics */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* Live Account Metrics */}
+                  <div className="bg-rose-950/10 p-4 border border-rose-500/20 rounded-2xl">
+                    <span className="text-[9px] uppercase tracking-widest text-rose-400 font-bold block mb-3 font-mono">Live Trading Metrics</span>
+                    <div className="space-y-2 font-mono text-[10px]">
+                      <div className="flex justify-between border-b border-slate-850/30 pb-1">
+                        <span className="text-slate-500">Total Live Trades:</span>
+                        <span className="font-bold text-slate-200">{adminInsights.live_trades_count || 0}</span>
+                      </div>
+                      <div className="flex justify-between border-b border-slate-850/30 pb-1">
+                        <span className="text-slate-500">Live Realized P&L:</span>
+                        <span className={`font-bold ${(adminInsights.live_pnl || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                          ₹{(adminInsights.live_pnl || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-500">Active Integrations:</span>
+                        <span className="font-bold text-cyan-400">{adminInsights.active_integrations_count || 0}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Mock Account Metrics */}
+                  <div className="bg-cyan-950/10 p-4 border border-cyan-500/20 rounded-2xl">
+                    <span className="text-[9px] uppercase tracking-widest text-cyan-400 font-bold block mb-3 font-mono">Mock Trading Metrics</span>
+                    <div className="space-y-2 font-mono text-[10px]">
+                      <div className="flex justify-between border-b border-slate-850/30 pb-1">
+                        <span className="text-slate-500">Total Mock Trades:</span>
+                        <span className="font-bold text-slate-200">{adminInsights.mock_trades_count || 0}</span>
+                      </div>
+                      <div className="flex justify-between border-b border-slate-850/30 pb-1">
+                        <span className="text-slate-500">Mock Realized P&L:</span>
+                        <span className={`font-bold ${(adminInsights.mock_pnl || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                          ₹{(adminInsights.mock_pnl || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-500">Paper Accounts:</span>
+                        <span className="font-bold text-slate-400">Unlimited Active</span>
+                      </div>
+                    </div>
                   </div>
                 </div>
 
