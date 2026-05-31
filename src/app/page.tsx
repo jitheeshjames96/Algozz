@@ -1549,8 +1549,8 @@ export default function Dashboard() {
   }, [chatMessages, isChatOpen]);
 
   const ASSETS = marketEnv === 'FOREX' ? FOREX_ASSETS : INDIAN_ASSETS;
-  // Updated: Forex capital = $100,000 | Indian = ₹1,00,000
-  const startingCapital = 100000.00;
+  // Updated: Forex capital = $10,000 | Indian = ₹1,00,000
+  const startingCapital = marketEnv === 'FOREX' ? 10000.00 : 100000.00;
   // Daily loss risk threshold: $5,000 for Forex | ₹2,000 for Indian
   const dailyLossThreshold = marketEnv === 'FOREX' ? -5000.0 : -2000.0;
 
@@ -1565,6 +1565,7 @@ export default function Dashboard() {
 
   // BIFROST Phase 5 States & Helpers
   const [tradeMode, setTradeMode] = useState<'MOCK' | 'LIVE'>('MOCK');
+  const [mockAccountSource, setMockAccountSource] = useState<'ADMIN' | 'MY'>('ADMIN');
 
   const isTokenExpired = userProfile && 
     userProfile.role !== 'admin' && 
@@ -2308,16 +2309,29 @@ export default function Dashboard() {
         return;
       }
 
-      if (user && !isAdmin && !isIntegrated) {
-        const { data: adminProfiles } = await supabase
-          .from('user_profiles')
-          .select('id')
-          .eq('role', 'admin')
-          .limit(1);
-        if (adminProfiles && adminProfiles.length > 0) {
-          queryUserId = adminProfiles[0].id;
+      if (tradeMode === 'MOCK') {
+        if (mockAccountSource === 'ADMIN') {
+          // Fallback to admin user_id for showcase trades
+          const { data: adminProfiles } = await supabase
+            .from('user_profiles')
+            .select('id')
+            .eq('role', 'admin')
+            .limit(1);
+          if (adminProfiles && adminProfiles.length > 0) {
+            queryUserId = adminProfiles[0].id;
+          } else {
+            queryUserId = undefined;
+          }
         } else {
+          // mockAccountSource === 'MY'
+          queryUserId = user?.id;
+        }
+      } else {
+        // LIVE Mode
+        if (user && !isAdmin && !isIntegrated) {
           queryUserId = undefined;
+        } else {
+          queryUserId = user?.id;
         }
       }
 
@@ -2337,7 +2351,7 @@ export default function Dashboard() {
       // 2. Fetch trades from Supabase
       let tradesQuery = supabase.from(tradesTable).select('*');
       if (queryUserId) {
-        if (isAdmin || isIntegrated) {
+        if (isAdmin || isIntegrated || (tradeMode === 'MOCK' && mockAccountSource === 'MY')) {
           tradesQuery = tradesQuery.eq('user_id', queryUserId);
         } else {
           tradesQuery = tradesQuery.or(`user_id.eq.${queryUserId},user_id.is.null`);
@@ -2404,7 +2418,7 @@ export default function Dashboard() {
           win_rate: Number(calculatedWinRate.toFixed(2)),
           net_profit: realizedPnl,
           active_allocations: active,
-          safety_state: (marketEnv === 'FOREX' ? realizedPnl <= -200.0 : realizedPnl <= -2000.0) ? "DAILY_LOSS_HALT" : "SAFE",
+          safety_state: (marketEnv === 'FOREX' ? realizedPnl <= -5000.0 : realizedPnl <= -2000.0) ? "DAILY_LOSS_HALT" : "SAFE",
           daily_realized_pnl: realizedPnl,
           total_trades: resolvedTrades.length
         });
@@ -2786,7 +2800,7 @@ export default function Dashboard() {
       supabase.removeChannel(tradesChannel);
       supabase.removeChannel(metricsChannel);
     };
-  }, [mounted, marketEnv, tradeMode]);
+  }, [mounted, marketEnv, tradeMode, mockAccountSource, user, userProfile]);
 
   // Reactive resolution/asset updates
   useEffect(() => {
@@ -2824,9 +2838,33 @@ export default function Dashboard() {
       
       // Draw new lines if there is an active trade
       if (openPosition) {
-        const parsed = parseSlTpFromLogic(openPosition.setup_logic || "");
-        const slVal = parsed ? parsed.sl : (openPosition.direction === 'BUY' ? Number(openPosition.entry_price) * 0.99 : Number(openPosition.entry_price) * 1.01);
-        const tpVal = parsed ? parsed.tp : (openPosition.direction === 'BUY' ? Number(openPosition.entry_price) * 1.02 : Number(openPosition.entry_price) * 0.98);
+        const userTypedSl = adjustSl[openPosition.id];
+        const userTypedTp = adjustTp[openPosition.id];
+        
+        let slVal = openPosition.stop_loss ? Number(openPosition.stop_loss) : null;
+        let tpVal = openPosition.take_profit ? Number(openPosition.take_profit) : null;
+        
+        if (userTypedSl !== undefined && userTypedSl !== "") {
+          const parsedNum = Number(userTypedSl);
+          if (!isNaN(parsedNum) && parsedNum > 0) {
+            slVal = parsedNum;
+          }
+        }
+        if (userTypedTp !== undefined && userTypedTp !== "") {
+          const parsedNum = Number(userTypedTp);
+          if (!isNaN(parsedNum) && parsedNum > 0) {
+            tpVal = parsedNum;
+          }
+        }
+        
+        if (slVal === null) {
+          const parsed = parseSlTpFromLogic(openPosition.setup_logic || "");
+          slVal = parsed ? parsed.sl : (openPosition.direction === 'BUY' ? Number(openPosition.entry_price) * 0.99 : Number(openPosition.entry_price) * 1.01);
+        }
+        if (tpVal === null) {
+          const parsed = parseSlTpFromLogic(openPosition.setup_logic || "");
+          tpVal = parsed ? parsed.tp : (openPosition.direction === 'BUY' ? Number(openPosition.entry_price) * 1.02 : Number(openPosition.entry_price) * 0.98);
+        }
         
         try {
           activeEntryLineRef.current = candleSeriesRef.current.createPriceLine({
@@ -2860,7 +2898,7 @@ export default function Dashboard() {
         }
       }
     }
-  }, [trades, selectedAsset, mounted, marketEnv]);
+  }, [trades, selectedAsset, mounted, marketEnv, adjustSl, adjustTp]);
 
   const copyToClipboard = (hash: string) => {
     navigator.clipboard.writeText(hash);
@@ -4431,7 +4469,7 @@ export default function Dashboard() {
           </button>
 
           {/* Global Kill Switch Button */}
-          {(userProfile?.role === 'admin' || brokerSettings?.integrated) && (
+          {(userProfile?.role === 'admin' || (tradeMode === 'MOCK' && mockAccountSource === 'MY') || (tradeMode === 'LIVE' && brokerSettings?.integrated)) && (
             <button
               onClick={triggerKillAll}
               title="EMERGENCY EXIT: Close All Positions"
@@ -4805,7 +4843,7 @@ export default function Dashboard() {
             {/* Price Candlestick Chart */}
             <div className={activeChartTab === 'PRICE' ? 'block' : 'hidden'}>
               <div ref={chartContainerRef} className="w-full h-[380px] rounded-xl overflow-hidden bg-[#090d16]" />
-              {openPosition && (userProfile?.role === 'admin' || brokerSettings?.integrated) && (
+              {openPosition && (userProfile?.role === 'admin' || (tradeMode === 'MOCK' && mockAccountSource === 'MY') || (tradeMode === 'LIVE' && brokerSettings?.integrated)) && (
                 <div className="mt-3 p-3 bg-slate-950/60 rounded-xl border border-slate-850/80 font-mono text-[10px] text-slate-400 flex flex-wrap gap-4 items-center justify-between animate-fadeIn">
                   <div className="flex items-center gap-2">
                     <span className="h-2 w-2 rounded-full bg-cyan-500 animate-pulse" />
@@ -5140,15 +5178,17 @@ export default function Dashboard() {
                                 {op.is_user_adjusted && (
                                   <span className="px-1 py-0.5 rounded text-[7px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">ADJUSTED</span>
                                 )}
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    toggleActiveTradeExpand(op);
-                                  }}
-                                  className="text-[9px] font-bold text-cyan-400 hover:text-cyan-300 border border-cyan-500/20 bg-cyan-500/5 hover:bg-cyan-500/15 px-1 py-0.5 rounded cursor-pointer transition-colors"
-                                >
-                                  {isExpanded ? 'CLOSE' : 'RISK'}
-                                </button>
+                                {(userProfile?.role === 'admin' || (tradeMode === 'MOCK' && mockAccountSource === 'MY') || (tradeMode === 'LIVE' && brokerSettings?.integrated)) && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      toggleActiveTradeExpand(op);
+                                    }}
+                                    className="text-[9px] font-bold text-cyan-400 hover:text-cyan-300 border border-cyan-500/20 bg-cyan-500/5 hover:bg-cyan-500/15 px-1 py-0.5 rounded cursor-pointer transition-colors"
+                                  >
+                                    {isExpanded ? 'CLOSE' : 'RISK'}
+                                  </button>
+                                )}
                               </div>
                             </td>
                             <td className="py-3 px-2">
@@ -5371,16 +5411,34 @@ export default function Dashboard() {
               </div>
               
               <div className="flex items-center justify-between">
-                <span className="text-[9px] text-slate-500 font-mono uppercase tracking-widest">
-                  mode: <span className={tradeMode === 'LIVE' ? 'text-rose-400' : 'text-cyan-400'}>{tradeMode}</span>
-                </span>
+                <div className="flex items-center gap-3">
+                  <span className="text-[9px] text-slate-500 font-mono uppercase tracking-widest">
+                    mode: <span className={tradeMode === 'LIVE' ? 'text-rose-400' : 'text-cyan-400'}>{tradeMode}</span>
+                  </span>
+                  {tradeMode === 'MOCK' && (userProfile?.subscription_status === 'active' || userProfile?.role === 'admin') && (
+                    <div className="flex items-center gap-1 bg-slate-900/60 p-0.5 rounded-md border border-slate-800 font-mono text-[8px] font-bold animate-fadeIn">
+                      <button 
+                        onClick={() => setMockAccountSource('ADMIN')} 
+                        className={`px-1.5 py-0.5 rounded cursor-pointer transition-all ${mockAccountSource === 'ADMIN' ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30' : 'text-slate-500'}`}
+                      >
+                        SHOWCASE
+                      </button>
+                      <button 
+                        onClick={() => setMockAccountSource('MY')} 
+                        className={`px-1.5 py-0.5 rounded cursor-pointer transition-all ${mockAccountSource === 'MY' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' : 'text-slate-500'}`}
+                      >
+                        MY MOCK
+                      </button>
+                    </div>
+                  )}
+                </div>
                 
                 {/* KILL SWITCH BUTTON */}
                 <button
                   onClick={triggerKillAll}
-                  disabled={!(userProfile?.role === 'admin' || brokerSettings?.integrated) || activeTrades.length === 0}
+                  disabled={!(userProfile?.role === 'admin' || (tradeMode === 'MOCK' && mockAccountSource === 'MY') || (tradeMode === 'LIVE' && brokerSettings?.integrated)) || activeTrades.length === 0}
                   className={`flex items-center gap-1 px-2.5 py-1 rounded text-[9px] font-bold font-mono tracking-widest transition-all ${
-                    (userProfile?.role === 'admin' || brokerSettings?.integrated) && activeTrades.length > 0 
+                    (userProfile?.role === 'admin' || (tradeMode === 'MOCK' && mockAccountSource === 'MY') || (tradeMode === 'LIVE' && brokerSettings?.integrated)) && activeTrades.length > 0 
                       ? 'bg-rose-600/20 hover:bg-rose-600/40 text-rose-400 hover:text-rose-300 border border-rose-500/30 cursor-pointer animate-pulse'
                       : 'bg-slate-900/40 text-slate-600 border border-slate-800/40 cursor-not-allowed'
                   }`}
