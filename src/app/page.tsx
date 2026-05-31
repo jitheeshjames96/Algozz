@@ -1698,6 +1698,79 @@ export default function Dashboard() {
   const [settingsFyersTotpKey, setSettingsFyersTotpKey] = useState('');
   const [settingsLoading, setSettingsLoading] = useState(false);
 
+  // Multi-User Broker Integration States
+  const [isBrokerModalOpen, setIsBrokerModalOpen] = useState(false);
+  const [brokerSettings, setBrokerSettings] = useState<any>(null);
+  const [brokerApiKey, setBrokerApiKey] = useState('');
+  const [brokerSecretKey, setBrokerSecretKey] = useState('');
+  const [brokerPin, setBrokerPin] = useState('');
+  const [brokerTotpKey, setBrokerTotpKey] = useState('');
+  const [brokerFyersId, setBrokerFyersId] = useState('');
+  const [brokerTradeMode, setBrokerTradeMode] = useState('MOCK');
+  const [brokerSaveLoading, setBrokerSaveLoading] = useState(false);
+
+  const loadBrokerSettings = async () => {
+    try {
+      const headers = await getAuthHeaders();
+      const res = await fetch(`${BACKEND_URL}/api/settings/broker`, { headers });
+      if (res.ok) {
+        const data = await res.json();
+        setBrokerSettings(data);
+        if (data.integrated) {
+          setBrokerApiKey(data.api_key || '');
+          setBrokerFyersId(data.fyers_id || '');
+          setBrokerTradeMode(data.trade_mode || 'MOCK');
+          setBrokerSecretKey('********');
+          setBrokerPin('********');
+          setBrokerTotpKey('********');
+        }
+      }
+    } catch (err) {
+      console.error("Error loading broker settings:", err);
+    }
+  };
+
+  const handleSaveBrokerSettings = async () => {
+    if (!brokerApiKey || !brokerSecretKey || !brokerPin || !brokerTotpKey || !brokerFyersId) {
+      alert("Please fill in all broker credentials fields.");
+      return;
+    }
+    setBrokerSaveLoading(true);
+    try {
+      const headers = await getAuthHeaders();
+      const res = await fetch(`${BACKEND_URL}/api/settings/broker`, {
+        method: 'POST',
+        headers: {
+          ...headers,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          broker_name: 'fyers',
+          api_key: brokerApiKey,
+          secret_key: brokerSecretKey,
+          pin: brokerPin,
+          totp_key: brokerTotpKey,
+          fyers_id: brokerFyersId,
+          trade_mode: brokerTradeMode
+        })
+      });
+      if (res.ok) {
+        alert("Broker integrated and verified successfully!");
+        setIsBrokerModalOpen(false);
+        loadBrokerSettings();
+        loadData();
+      } else {
+        const data = await res.json();
+        alert(`Failed to integrate broker: ${data.detail || 'API validation error'}`);
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Error saving broker settings.");
+    } finally {
+      setBrokerSaveLoading(false);
+    }
+  };
+
   // Swing Trading States
   const [swingWatchlist, setSwingWatchlist] = useState<any[]>([]);
   const [swingSignals, setSwingSignals] = useState<any[]>([]);
@@ -2145,6 +2218,7 @@ export default function Dashboard() {
     };
 
     loadProfile();
+    loadBrokerSettings();
 
     // Set up Real-Time subscription for this user's profile changes
     const profileChannel = supabase
@@ -2204,21 +2278,43 @@ export default function Dashboard() {
       const summaryTable = marketEnv === 'FOREX' ? `${prefix}forex_account_summary` : `${prefix}account_summary`;
       const tradesTable = marketEnv === 'FOREX' ? `${prefix}forex_trades` : `${prefix}trades`;
 
+      let queryUserId = user?.id;
+      const isAdmin = userProfile?.role === 'admin';
+      const isIntegrated = brokerSettings?.integrated;
+
+      if (user && !isAdmin && !isIntegrated) {
+        const { data: adminProfiles } = await supabase
+          .from('user_profiles')
+          .select('id')
+          .eq('role', 'admin')
+          .limit(1);
+        if (adminProfiles && adminProfiles.length > 0) {
+          queryUserId = adminProfiles[0].id;
+        } else {
+          queryUserId = undefined;
+        }
+      }
+
       // 1. Fetch metrics from Supabase
-      const { data: summaryData, error: summaryError } = await supabase
-        .from(summaryTable)
-        .select('*')
-        .eq('id', 1)
-        .single();
+      let summaryQuery = supabase.from(summaryTable).select('*');
+      if (queryUserId) {
+        summaryQuery = summaryQuery.eq('user_id', queryUserId);
+      } else {
+        summaryQuery = summaryQuery.eq('id', 1);
+      }
+      
+      const { data: summaryData, error: summaryError } = await summaryQuery.maybeSingle();
       if (summaryError) {
         console.error(`Supabase metrics query error from ${summaryTable}:`, summaryError);
       }
 
       // 2. Fetch trades from Supabase
-      const { data: tradesData, error: tradesError } = await supabase
-        .from(tradesTable)
-        .select('*')
-        .order('entry_time', { ascending: false });
+      let tradesQuery = supabase.from(tradesTable).select('*');
+      if (queryUserId) {
+        tradesQuery = tradesQuery.eq('user_id', queryUserId);
+      }
+      
+      const { data: tradesData, error: tradesError } = await tradesQuery.order('entry_time', { ascending: false });
       if (tradesError) {
         console.error(`Supabase trades query error from ${tradesTable}:`, tradesError);
       }
@@ -4176,7 +4272,7 @@ export default function Dashboard() {
             <div className="flex items-center gap-1.5 border border-slate-800 bg-[#070b15] px-3 py-1.5 rounded-xl text-[10px] font-mono">
               <span className="text-slate-500">TOKENS:</span>
               <span className="text-cyan-400 font-bold">
-                {userProfile.subscription_status === 'active' || userProfile.role === 'admin' ? 'UNLIMITED' : `${userProfile.token_balance} FREE`}
+                {userProfile.subscription_status === 'active' || userProfile.role === 'admin' ? 'UNLIMITED' : `${userProfile.token_balance} / 100 REMAINING TODAY`}
               </span>
               {userProfile.subscription_status === 'free' && (
                 <button
@@ -4206,6 +4302,18 @@ export default function Dashboard() {
               {userProfile.subscription_status === 'pending_approval' && (
                 <span className="ml-1.5 text-[8px] bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1 py-0.5 rounded font-black animate-pulse">PENDING</span>
               )}
+              <button
+                onClick={() => setIsBrokerModalOpen(true)}
+                title="Integrate Your Fyers Broker Account"
+                className={`ml-1.5 border px-2 py-0.5 rounded text-[8px] font-bold cursor-pointer flex items-center gap-1 transition-all ${
+                  brokerSettings?.integrated 
+                    ? 'border-emerald-500/30 bg-emerald-500/5 text-emerald-400 hover:bg-emerald-500/15'
+                    : 'border-slate-800 bg-slate-900/50 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                {brokerSettings?.integrated ? 'BROKER: ACTIVE' : 'CONNECT'}
+              </button>
             </div>
           )}
 
@@ -4282,14 +4390,16 @@ export default function Dashboard() {
           </button>
 
           {/* Global Kill Switch Button */}
-          <button
-            onClick={triggerKillAll}
-            title="EMERGENCY EXIT: Close All Positions"
-            className="flex items-center gap-1.5 border border-rose-500/40 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 px-3 py-1.5 rounded-lg text-[10px] font-mono font-bold tracking-wider transition-all cursor-pointer animate-pulse"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
-            KILL SWITCH
-          </button>
+          {(userProfile?.role === 'admin' || brokerSettings?.integrated) && (
+            <button
+              onClick={triggerKillAll}
+              title="EMERGENCY EXIT: Close All Positions"
+              className="flex items-center gap-1.5 border border-rose-500/40 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 px-3 py-1.5 rounded-lg text-[10px] font-mono font-bold tracking-wider transition-all cursor-pointer animate-pulse"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+              KILL SWITCH
+            </button>
+          )}
 
           {/* User Avatar + Sign Out */}
           {user && (
@@ -5011,9 +5121,9 @@ export default function Dashboard() {
                 {/* KILL SWITCH BUTTON */}
                 <button
                   onClick={triggerKillAll}
-                  disabled={activeTrades.length === 0}
+                  disabled={!(userProfile?.role === 'admin' || brokerSettings?.integrated) || activeTrades.length === 0}
                   className={`flex items-center gap-1 px-2.5 py-1 rounded text-[9px] font-bold font-mono tracking-widest transition-all ${
-                    activeTrades.length > 0 
+                    (userProfile?.role === 'admin' || brokerSettings?.integrated) && activeTrades.length > 0 
                       ? 'bg-rose-600/20 hover:bg-rose-600/40 text-rose-400 hover:text-rose-300 border border-rose-500/30 cursor-pointer animate-pulse'
                       : 'bg-slate-900/40 text-slate-600 border border-slate-800/40 cursor-not-allowed'
                   }`}
@@ -5483,6 +5593,117 @@ export default function Dashboard() {
           </div>
         )}
       </div>
+
+      {/* Broker Integration Modal */}
+      {isBrokerModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 font-mono">
+          <div className="bg-[#070b15] border border-slate-800 rounded-3xl p-6 max-w-lg w-full shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-4 mb-5">
+              <h2 className="text-xs font-bold text-slate-200 uppercase tracking-widest flex items-center gap-1.5">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                Fyers Broker Integration
+              </h2>
+              <button 
+                onClick={() => setIsBrokerModalOpen(false)}
+                className="text-slate-500 hover:text-slate-300 text-[10px] font-bold border border-slate-850 px-2 py-1 rounded cursor-pointer"
+              >
+                CLOSE
+              </button>
+            </div>
+
+            <div className="space-y-4 text-xs">
+              <div>
+                <label className="text-[9px] text-slate-500 block mb-1">FYERS LOGIN ID</label>
+                <input
+                  type="text"
+                  placeholder="e.g. FAJ77193"
+                  value={brokerFyersId}
+                  onChange={(e) => setBrokerFyersId(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-cyan-500 transition-colors"
+                />
+              </div>
+
+              <div>
+                <label className="text-[9px] text-slate-500 block mb-1">FYERS APP APP_ID (CLIENT ID)</label>
+                <input
+                  type="text"
+                  placeholder="Enter Fyers Client ID"
+                  value={brokerApiKey}
+                  onChange={(e) => setBrokerApiKey(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-cyan-500 transition-colors"
+                />
+              </div>
+
+              <div>
+                <label className="text-[9px] text-slate-500 block mb-1">FYERS APP SECRET KEY</label>
+                <input
+                  type="password"
+                  placeholder={brokerSettings?.integrated ? "********" : "Enter Fyers Secret Key"}
+                  value={brokerSecretKey}
+                  onChange={(e) => setBrokerSecretKey(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-cyan-500 transition-colors"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-[9px] text-slate-500 block mb-1">FYERS LOGIN PIN</label>
+                  <input
+                    type="password"
+                    placeholder={brokerSettings?.integrated ? "********" : "PIN"}
+                    value={brokerPin}
+                    onChange={(e) => setBrokerPin(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-cyan-500 transition-colors"
+                  />
+                </div>
+                <div>
+                  <label className="text-[9px] text-slate-500 block mb-1">TRADE MODE</label>
+                  <select
+                    value={brokerTradeMode}
+                    onChange={(e) => setBrokerTradeMode(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-cyan-500 transition-colors cursor-pointer"
+                  >
+                    <option value="MOCK">MOCK</option>
+                    <option value="LIVE">LIVE</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[9px] text-slate-500 block mb-1">FYERS TOTP KEY (2FA SECRET)</label>
+                <input
+                  type="password"
+                  placeholder={brokerSettings?.integrated ? "********" : "Enter 32-character TOTP key"}
+                  value={brokerTotpKey}
+                  onChange={(e) => setBrokerTotpKey(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-cyan-500 transition-colors"
+                />
+              </div>
+
+              <div className="pt-2 border-t border-slate-850/60 flex items-center justify-between">
+                <span className="text-[9px] text-slate-500 leading-tight pr-4">
+                  Note: Credentials are encrypted at rest using AES-GCM-256 and never returned plain to the browser.
+                </span>
+                
+                <button
+                  onClick={handleSaveBrokerSettings}
+                  disabled={brokerSaveLoading}
+                  className="bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 px-4 py-2 rounded-xl text-[10px] font-bold tracking-widest transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                >
+                  {brokerSaveLoading ? (
+                    <>
+                      <span className="animate-spin rounded-full h-3 w-3 border-t border-b border-cyan-400" />
+                      VALIDATING...
+                    </>
+                  ) : (
+                    'TEST & CONNECT'
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Admin Command Center Modal */}
       {isAdminModalOpen && (
