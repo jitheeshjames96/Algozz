@@ -991,7 +991,7 @@ const parseSlTpFromLogic = (setupLogic: string) => {
 
 // Forex & Indian Currency Formatters
 const formatCurrency = (val: number, env: 'INDIAN' | 'FOREX' | 'SWING', decimals: number = 2) => {
-  const isUSD = env === 'FOREX' || env === 'SWING';
+  const isUSD = env === 'FOREX';
   const prefix = isUSD ? '$' : '₹';
   const locale = isUSD ? 'en-US' : 'en-IN';
   return `${prefix}${Number(val).toLocaleString(locale, { 
@@ -1001,7 +1001,7 @@ const formatCurrency = (val: number, env: 'INDIAN' | 'FOREX' | 'SWING', decimals
 };
 
 const formatCurrencyCompact = (val: number, env: 'INDIAN' | 'FOREX' | 'SWING') => {
-  const isUSD = env === 'FOREX' || env === 'SWING';
+  const isUSD = env === 'FOREX';
   const prefix = isUSD ? '$' : '₹';
   const locale = isUSD ? 'en-US' : 'en-IN';
   return `${prefix}${Number(val).toLocaleString(locale, { 
@@ -1010,7 +1010,6 @@ const formatCurrencyCompact = (val: number, env: 'INDIAN' | 'FOREX' | 'SWING') =
 };
 
 const formatPrice = (val: number, env: 'INDIAN' | 'FOREX' | 'SWING') => {
-  const isUSD = env === 'FOREX' || env === 'SWING';
   const decimals = env === 'FOREX' ? 4 : 2;
   return formatCurrency(val, env, decimals);
 };
@@ -1434,6 +1433,62 @@ const calculateDailyBreakdown = (tradesList: Trade[]) => {
   }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 };
 
+const PremiumUpgradeBlocker = ({ feature, onRequestUpgrade }: { feature: string; onRequestUpgrade: () => void }) => {
+  return (
+    <div className="border border-slate-800 bg-[#070b15]/95 rounded-2xl p-8 shadow-2xl text-center font-mono max-w-2xl mx-auto my-12 animate-fadeIn">
+      <div className="h-16 w-16 bg-gradient-to-tr from-amber-500/20 to-orange-500/20 border border-orange-500/30 rounded-2xl flex items-center justify-center text-3xl mx-auto mb-6 shadow-inner animate-pulse">
+        👑
+      </div>
+      <h2 className="text-base font-black text-slate-100 uppercase tracking-widest mb-3">
+        {feature} is locked
+      </h2>
+      <p className="text-xs text-slate-400 mb-8 leading-relaxed max-w-md mx-auto">
+        Your free tier token quota has expired. Accessing the premium swing scanner, advanced multi-asset option ledger, and real-time WhatsApp signal dispatches requires a premium upgrade.
+      </p>
+      
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8 text-left max-w-lg mx-auto bg-slate-950/40 p-4 rounded-xl border border-slate-900">
+        <div className="flex flex-col gap-1">
+          <span className="text-cyan-400 font-bold text-[10px] uppercase">Swing Engine</span>
+          <span className="text-slate-500 text-[9px] leading-snug">Elite stock picks, technical scoring, and portfolio tracking.</span>
+        </div>
+        <div className="flex flex-col gap-1 border-t sm:border-t-0 sm:border-l border-slate-900 pt-3 sm:pt-0 sm:pl-4">
+          <span className="text-cyan-400 font-bold text-[10px] uppercase">AI Assistant</span>
+          <span className="text-slate-500 text-[9px] leading-snug">Unlimited context-aware terminal AI chat queries.</span>
+        </div>
+        <div className="flex flex-col gap-1 border-t sm:border-t-0 sm:border-l border-slate-900 pt-3 sm:pt-0 sm:pl-4">
+          <span className="text-cyan-400 font-bold text-[10px] uppercase">Risk Controls</span>
+          <span className="text-slate-500 text-[9px] leading-snug">Live mode activation, custom position sizing, and single-click flatten.</span>
+        </div>
+      </div>
+
+      <button
+        onClick={onRequestUpgrade}
+        className="bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-slate-950 text-xs font-black tracking-widest px-8 py-3 rounded-xl uppercase transition-all shadow-lg shadow-orange-500/20 active:scale-95 cursor-pointer"
+      >
+        REQUEST PREMIUM ACCESS
+      </button>
+    </div>
+  );
+};
+
+const InlinePremiumUpgradeBlocker = ({ feature, onRequestUpgrade }: { feature: string; onRequestUpgrade: () => void }) => {
+  return (
+    <div className="flex flex-col items-center justify-center p-6 text-center bg-slate-950/20 border border-slate-800/60 rounded-xl font-mono">
+      <span className="text-2xl mb-2">🛡️</span>
+      <h3 className="text-[10px] font-black text-rose-400 uppercase tracking-widest mb-1.5">{feature} Restricted</h3>
+      <p className="text-[9px] text-slate-500 mb-4 leading-relaxed max-w-[200px]">
+        Upgrade to Premium for unlimited stock scans, live alerts, and advanced dashboard integrations.
+      </p>
+      <button
+        onClick={onRequestUpgrade}
+        className="bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-slate-950 text-[9px] font-black tracking-widest px-4 py-1.5 rounded-lg uppercase transition-all active:scale-95 cursor-pointer"
+      >
+        UPGRADE
+      </button>
+    </div>
+  );
+};
+
 export default function Dashboard() {
   const [mounted, setMounted] = useState(false);
   const [marketEnv, setMarketEnv] = useState<'INDIAN' | 'FOREX' | 'SWING'>('INDIAN');
@@ -1507,6 +1562,133 @@ export default function Dashboard() {
   const [adminInsights, setAdminInsights] = useState<any>(null);
   const [adminInsightsLoading, setAdminInsightsLoading] = useState(false);
   const [userProfilesList, setUserProfilesList] = useState<any[]>([]);
+
+  // BIFROST Phase 5 States & Helpers
+  const [tradeMode, setTradeMode] = useState<'MOCK' | 'LIVE'>('MOCK');
+
+  const isTokenExpired = userProfile && 
+    userProfile.role !== 'admin' && 
+    userProfile.subscription_status !== 'active' && 
+    (userProfile.token_balance === undefined || userProfile.token_balance <= 0);
+
+  const requestPremiumUpgrade = async () => {
+    try {
+      const headers = await getAuthHeaders();
+      const res = await fetch(`${BACKEND_URL}/api/subscription/request`, {
+        method: 'POST',
+        headers
+      });
+      if (res.ok) {
+        alert("Subscription request sent to admin email successfully!");
+        const { data: profileData } = await supabase.from('user_profiles').select('*').eq('id', user.id).single();
+        if (profileData) setUserProfile(profileData);
+      } else {
+        alert("Failed to request subscription.");
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const downloadCSV = () => {
+    if (ledgerFilteredTrades.length === 0) return;
+    const headers = ['id', 'symbol', 'direction', 'entry_price', 'exit_price', 'quantity', 'entry_time', 'exit_time', 'status', 'pnl', 'setup_logic'];
+    const csvContent = [
+      headers.join(','),
+      ...ledgerFilteredTrades.map(t => [
+        t.id,
+        t.symbol,
+        `"${t.direction}"`,
+        t.entry_price,
+        t.exit_price || '',
+        t.quantity,
+        t.entry_time,
+        t.exit_time || '',
+        `"${t.status}"`,
+        computePnl(t).toFixed(2),
+        `"${(t.setup_logic || '').replace(/"/g, '""')}"`
+      ].join(','))
+    ].join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `BIFROST_trades_${ledgerFilter.toLowerCase()}_${marketEnv.toLowerCase()}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const downloadJSON = () => {
+    if (ledgerFilteredTrades.length === 0) return;
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(ledgerFilteredTrades, null, 2));
+    const link = document.createElement("a");
+    link.setAttribute("href", dataStr);
+    link.setAttribute("download", `BIFROST_trades_${ledgerFilter.toLowerCase()}_${marketEnv.toLowerCase()}.json`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const calculateSharpeRatio = (tradesList: Trade[]) => {
+    const closed = tradesList.filter(t => t.status === 'CLOSED');
+    if (closed.length < 2) return 0.0;
+    const returns = closed.map(t => {
+      const entry = Number(t.entry_price);
+      const exit = Number(t.exit_price) || entry;
+      const pct = entry > 0 ? ((exit - entry) / entry) * 100 : 0.0;
+      return t.direction === 'BUY' ? pct : -pct;
+    });
+    const avg = returns.reduce((a, b) => a + b, 0) / returns.length;
+    const variance = returns.reduce((a, b) => a + Math.pow(b - avg, 2), 0) / (returns.length - 1);
+    const stdDev = Math.sqrt(variance);
+    return stdDev === 0 ? 0.0 : avg / stdDev;
+  };
+
+  const calculateMaxDrawdown = (tradesList: Trade[]) => {
+    const closed = tradesList.filter(t => t.status === 'CLOSED');
+    if (closed.length === 0) return 0.0;
+    let peak = 100000.0;
+    let currentEquity = 100000.0;
+    let maxDrawdown = 0.0;
+    const sortedClosed = [...closed].sort((a, b) => new Date(a.exit_time || '').getTime() - new Date(b.exit_time || '').getTime());
+    for (const t of sortedClosed) {
+      const pnl = computePnl(t);
+      currentEquity += pnl;
+      if (currentEquity > peak) peak = currentEquity;
+      const dd = peak > 0 ? ((peak - currentEquity) / peak) * 100 : 0.0;
+      if (dd > maxDrawdown) maxDrawdown = dd;
+    }
+    return maxDrawdown;
+  };
+
+  const triggerKillAll = async () => {
+    if (!confirm(`Are you sure you want to FLATTEN ALL open positions in the ${marketEnv} environment?`)) return;
+    try {
+      const headers = await getAuthHeaders();
+      const res = await fetch(`${BACKEND_URL}/api/trade/kill-all`, {
+        method: 'POST',
+        headers: {
+          ...headers,
+          'Content-Type': 'application/json',
+          'X-Trade-Mode': tradeMode
+        },
+        body: JSON.stringify({ market_type: marketEnv })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        alert(`Successfully closed ${data.closed_count} positions.`);
+        loadData();
+      } else {
+        alert("Failed to kill positions.");
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
 
   // API Configuration settings states
   const [settingsGeminiKey, setSettingsGeminiKey] = useState('');
@@ -2009,8 +2191,9 @@ export default function Dashboard() {
   // Fetch all dashboard data from Supabase and FastAPI
   const loadData = async () => {
     try {
-      const summaryTable = marketEnv === 'FOREX' ? 'forex_account_summary' : 'account_summary';
-      const tradesTable = marketEnv === 'FOREX' ? 'forex_trades' : 'trades';
+      const prefix = tradeMode === 'LIVE' ? 'production_' : '';
+      const summaryTable = marketEnv === 'FOREX' ? `${prefix}forex_account_summary` : `${prefix}account_summary`;
+      const tradesTable = marketEnv === 'FOREX' ? `${prefix}forex_trades` : `${prefix}trades`;
 
       // 1. Fetch metrics from Supabase
       const { data: summaryData, error: summaryError } = await supabase
@@ -2426,12 +2609,16 @@ export default function Dashboard() {
     loadChartAndState(resolutionRef.current, assetRef.current);
     checkMarketState();
 
+    const prefix = tradeMode === 'LIVE' ? 'production_' : '';
+    const tradesTable = marketEnv === 'FOREX' ? `${prefix}forex_trades` : `${prefix}trades`;
+    const summaryTable = marketEnv === 'FOREX' ? `${prefix}forex_account_summary` : `${prefix}account_summary`;
+
     // 3. Supabase Real-Time Subscriptions (Utilizing unique channel names to prevent crossover conflicts)
     const tradesChannel = supabase
-      .channel(`trades-realtime-channel-${marketEnv}`)
+      .channel(`trades-realtime-channel-${marketEnv}-${tradeMode}`)
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: marketEnv === 'FOREX' ? 'forex_trades' : 'trades' },
+        { event: '*', schema: 'public', table: tradesTable },
         (payload) => {
           console.log('🔔 Real-time Trade Event:', payload);
           loadData();
@@ -2440,10 +2627,10 @@ export default function Dashboard() {
       .subscribe();
 
     const metricsChannel = supabase
-      .channel(`metrics-realtime-channel-${marketEnv}`)
+      .channel(`metrics-realtime-channel-${marketEnv}-${tradeMode}`)
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: marketEnv === 'FOREX' ? 'forex_account_summary' : 'account_summary' },
+        { event: '*', schema: 'public', table: summaryTable },
         (payload) => {
           console.log('🔔 Real-time Account summary Event:', payload);
           loadData();
@@ -2462,7 +2649,7 @@ export default function Dashboard() {
       supabase.removeChannel(tradesChannel);
       supabase.removeChannel(metricsChannel);
     };
-  }, [mounted, marketEnv]);
+  }, [mounted, marketEnv, tradeMode]);
 
   // Reactive resolution/asset updates
   useEffect(() => {
@@ -2625,76 +2812,134 @@ export default function Dashboard() {
   const dailyLossRisk = metrics.daily_realized_pnl <= dailyLossThreshold;
 
   // ── Excel Download (Custom Specific Columns) ──────────────────────────────────
-  const downloadExcel = () => {
+  const downloadExcel = async () => {
     const wb = XLSX.utils.book_new();
-    const allClosedTrades = trades.filter(t => t.status === 'CLOSED');
     const now = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
 
-    const monthlyTrades = allClosedTrades.filter(t => new Date(t.entry_time) >= monthStart);
-
-    if (marketEnv === 'INDIAN') {
-      const parseOptionDetails = (setup: string) => {
-        const strikeMatch = setup.match(/Strike:\s*([0-9.]+)/i);
-        const typeMatch = setup.match(/Option\s*Type:\s*(CE|PE)/i);
-        const spotMatch = setup.match(/Spot:\s*([0-9.]+)/i);
-        const slMatch = setup.match(/SL:\s*([0-9.]+)/i);
-        const tpMatch = setup.match(/TP:\s*([0-9.]+)/i);
-        return {
-          strike: strikeMatch ? Number(strikeMatch[1]) : '',
-          type: typeMatch ? typeMatch[1] : '',
-          spot: spotMatch ? Number(spotMatch[1]) : '',
-          sl: slMatch ? Number(slMatch[1]) : '',
-          tp: tpMatch ? Number(tpMatch[1]) : '',
-        };
-      };
-
-      const rows = monthlyTrades.map(t => {
-        const opt = parseOptionDetails(t.setup_logic || '');
-        const pnlVal = computePnl(t);
-        return {
-          'Date': new Date(t.entry_time).toLocaleDateString('en-IN'),
-          'Option Symbol': t.symbol,
-          'Underlying': t.symbol.includes('BANK') ? 'BANK NIFTY' : (t.symbol.includes('SENSEX') ? 'SENSEX' : 'NIFTY 50'),
-          'Option Type': opt.type || (t.symbol.endsWith('CE') ? 'CE' : (t.symbol.endsWith('PE') ? 'PE' : 'CE/PE')),
-          'Strike Price': opt.strike,
-          'Entry Premium (Price)': Number(t.entry_price),
-          'Exit Premium (Price)': Number(t.exit_price) || '',
-          'Quantity': t.quantity,
-          'Stop Loss Premium': opt.sl,
-          'Take Profit Premium': opt.tp,
-          'Net P&L (INR)': pnlVal.toFixed(2),
-          'Outcome': pnlVal >= 0 ? 'PROFIT' : 'LOSS',
-          'Underlying Spot': opt.spot,
-          'Entry Time': t.entry_time,
-          'Exit Time': t.exit_time || '',
-        };
-      });
-
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Indian Option Trades');
-    } else {
-      const rows = monthlyTrades.map(t => {
-        const pnlVal = computePnl(t);
-        return {
-          'Date': new Date(t.entry_time).toLocaleDateString('en-IN'),
-          'Pair / Asset': t.symbol,
-          'Position Type': t.direction === 'BUY' ? 'LONG' : 'SHORT',
-          'Entry Price': Number(t.entry_price),
-          'Exit Price': Number(t.exit_price) || '',
-          'Quantity (Units)': t.quantity,
-          'Net P&L (USD)': pnlVal.toFixed(2),
-          'Outcome': pnlVal >= 0 ? 'PROFIT' : 'LOSS',
-          'Setup Trigger': (t.setup_logic || '').slice(0, 100),
-          'Entry Time': t.entry_time,
-          'Exit Time': t.exit_time || '',
-        };
-      });
-
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Forex Trades');
+    // 1. Fetch Indian Option Trades
+    let indianOptionTradesList = [];
+    try {
+      const prefix = tradeMode === 'LIVE' ? 'production_' : '';
+      const { data } = await supabase
+        .from(`${prefix}trades`)
+        .select('*')
+        .order('entry_time', { ascending: false });
+      if (data) indianOptionTradesList = data;
+    } catch (e) {
+      console.warn("Failed to fetch Indian trades for Excel export:", e);
+      if (marketEnv === 'INDIAN') indianOptionTradesList = trades;
     }
 
+    // 2. Fetch Forex Trades
+    let forexTradesList = [];
+    try {
+      const prefix = tradeMode === 'LIVE' ? 'production_' : '';
+      const { data } = await supabase
+        .from(`${prefix}forex_trades`)
+        .select('*')
+        .order('entry_time', { ascending: false });
+      if (data) forexTradesList = data;
+    } catch (e) {
+      console.warn("Failed to fetch Forex trades for Excel export:", e);
+      if (marketEnv === 'FOREX') forexTradesList = trades;
+    }
+
+    // Filter closed ones
+    const closedIndian = indianOptionTradesList.filter(t => t.status === 'CLOSED');
+    const closedForex = forexTradesList.filter(t => t.status === 'CLOSED');
+
+    // Helper to parse option details
+    const parseOptionDetails = (setup: string) => {
+      const strikeMatch = setup.match(/Strike:\s*([0-9.]+)/i);
+      const typeMatch = setup.match(/Option\s*Type:\s*(CE|PE)/i);
+      const spotMatch = setup.match(/Spot:\s*([0-9.]+)/i);
+      const slMatch = setup.match(/SL:\s*([0-9.]+)/i);
+      const tpMatch = setup.match(/TP:\s*([0-9.]+)/i);
+      return {
+        strike: strikeMatch ? Number(strikeMatch[1]) : '',
+        type: typeMatch ? typeMatch[1] : '',
+        spot: spotMatch ? Number(spotMatch[1]) : '',
+        sl: slMatch ? Number(slMatch[1]) : '',
+        tp: tpMatch ? Number(tpMatch[1]) : '',
+      };
+    };
+
+    // Format Indian option trades sheet
+    const indianRows = closedIndian.map(t => {
+      const opt = parseOptionDetails(t.setup_logic || '');
+      const pnlVal = computePnl(t);
+      return {
+        'Date': new Date(t.entry_time).toLocaleDateString('en-IN'),
+        'Option Symbol': t.symbol,
+        'Underlying': t.symbol.includes('BANK') ? 'BANK NIFTY' : (t.symbol.includes('SENSEX') ? 'SENSEX' : 'NIFTY 50'),
+        'Option Type': opt.type || (t.symbol.endsWith('CE') ? 'CE' : (t.symbol.endsWith('PE') ? 'PE' : 'CE/PE')),
+        'Strike Price': opt.strike,
+        'Entry Premium (Price)': Number(t.entry_price),
+        'Exit Premium (Price)': Number(t.exit_price) || '',
+        'Quantity': t.quantity,
+        'Stop Loss Premium': opt.sl,
+        'Take Profit Premium': opt.tp,
+        'Net P&L (INR)': pnlVal.toFixed(2),
+        'Outcome': pnlVal >= 0 ? 'PROFIT' : 'LOSS',
+        'Underlying Spot': opt.spot,
+        'Entry Time': t.entry_time,
+        'Exit Time': t.exit_time || '',
+      };
+    });
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(indianRows), 'Indian Option Trades');
+
+    // Format Forex trades sheet
+    const forexRows = closedForex.map(t => {
+      const pnlVal = computePnl(t);
+      return {
+        'Date': new Date(t.entry_time).toLocaleDateString('en-IN'),
+        'Pair / Asset': t.symbol,
+        'Position Type': t.direction === 'BUY' ? 'LONG' : 'SHORT',
+        'Entry Price': Number(t.entry_price),
+        'Exit Price': Number(t.exit_price) || '',
+        'Quantity (Units)': t.quantity,
+        'Net P&L (USD)': pnlVal.toFixed(2),
+        'Outcome': pnlVal >= 0 ? 'PROFIT' : 'LOSS',
+        'Setup Trigger': (t.setup_logic || '').slice(0, 100),
+        'Entry Time': t.entry_time,
+        'Exit Time': t.exit_time || '',
+      };
+    });
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(forexRows), 'Forex Trades');
+
+    // Format Swing Portfolio Holdings sheet
+    const swingHoldingRows = swingHoldings.map(h => {
+      const cost = Number(h.average_buy_price) * Number(h.quantity);
+      return {
+        'Symbol': h.symbol,
+        'Avg Buy Price (INR)': Number(h.average_buy_price),
+        'Quantity (Shares)': h.quantity,
+        'Cost Basis (INR)': cost.toFixed(2),
+        'Last Synced At': h.last_synced_at || '',
+      };
+    });
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(swingHoldingRows), 'Swing Portfolio');
+
+    // Format Swing Signals & Picks sheet
+    const swingSignalRows = swingSignals.map(s => {
+      return {
+        'Date': new Date(s.signal_date).toLocaleDateString('en-IN'),
+        'Symbol': s.symbol,
+        'Entry Price (INR)': Number(s.entry_price),
+        'Target Price (INR)': Number(s.target_price),
+        'Stop Loss (INR)': Number(s.stop_loss),
+        'Score / Rating': s.composite_score || '',
+        'Status': s.status,
+        'Exit Price': s.exit_price || '',
+        'Exit Date': s.exit_date || '',
+        'Exit Rule': s.exit_rule || '',
+      };
+    });
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(swingSignalRows), 'Swing Picks & Signals');
+
     const monthStr = now.toLocaleString('en-IN', { year: 'numeric', month: 'short' }).replace(' ', '-');
-    XLSX.writeFile(wb, `BIFROST_${marketEnv}_Trades_${monthStr}.xlsx`);
+    XLSX.writeFile(wb, `BIFROST_All_Environments_Trades_${monthStr}.xlsx`);
   };
 
   // ── Performance Metrics Excel Download ──────────────────────────────────────
@@ -4229,7 +4474,11 @@ export default function Dashboard() {
 
       {/* 3. Split Screen Brokerage Layout */}
       {marketEnv === 'SWING' ? (
-        <SwingTradingDashboard />
+        isTokenExpired ? (
+          <PremiumUpgradeBlocker feature="Swing Trading Dashboard" onRequestUpgrade={requestPremiumUpgrade} />
+        ) : (
+          <SwingTradingDashboard />
+        )
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         
@@ -4343,6 +4592,20 @@ export default function Dashboard() {
                       <span className="text-slate-500 text-[9px] uppercase tracking-wider block mb-1">Win Ratio</span>
                       <span className="text-lg font-black text-emerald-400">
                         {filteredWinRate}%
+                      </span>
+                    </div>
+
+                    <div className="bg-slate-900/50 p-3 rounded-lg border border-slate-850">
+                      <span className="text-slate-500 text-[9px] uppercase tracking-wider block mb-1">Sharpe Ratio</span>
+                      <span className="text-lg font-black text-amber-400">
+                        {calculateSharpeRatio(filteredTrades).toFixed(2)}
+                      </span>
+                    </div>
+
+                    <div className="bg-slate-900/50 p-3 rounded-lg border border-slate-850">
+                      <span className="text-slate-500 text-[9px] uppercase tracking-wider block mb-1">Max Drawdown</span>
+                      <span className="text-lg font-black text-rose-400">
+                        {calculateMaxDrawdown(filteredTrades).toFixed(1)}%
                       </span>
                     </div>
 
@@ -4610,87 +4873,136 @@ export default function Dashboard() {
               <span className="text-[10px] text-slate-500 font-mono">SMC Engine</span>
             </div>
 
-            <form onSubmit={runCustomScan} className="flex gap-2 mb-4 font-mono">
-              <input
-                type="text"
-                placeholder="e.g. SBIN.NS, TCS.NS, GC=F"
-                value={customScanTicker}
-                onChange={(e) => setCustomScanTicker(e.target.value)}
-                className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs font-bold text-slate-200 focus:outline-none focus:border-cyan-500 placeholder:text-slate-600 transition-colors"
-              />
-              <button
-                type="submit"
-                disabled={customScanLoading}
-                className="bg-cyan-500 hover:bg-cyan-600 text-slate-950 font-bold px-4 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-lg hover:shadow-cyan-500/20 active:scale-95 disabled:opacity-50 cursor-pointer"
-              >
-                {customScanLoading ? (
-                  <div className="h-3.5 w-3.5 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
-                ) : 'SCAN'}
-              </button>
-            </form>
+            {isTokenExpired ? (
+              <InlinePremiumUpgradeBlocker feature="Custom Stock Scanner" onRequestUpgrade={requestPremiumUpgrade} />
+            ) : (
+              <>
+                <form onSubmit={runCustomScan} className="flex gap-2 mb-4 font-mono">
+                  <input
+                    type="text"
+                    placeholder="e.g. SBIN.NS, TCS.NS, GC=F"
+                    value={customScanTicker}
+                    onChange={(e) => setCustomScanTicker(e.target.value)}
+                    className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs font-bold text-slate-200 focus:outline-none focus:border-cyan-500 placeholder:text-slate-600 transition-colors"
+                  />
+                  <button
+                    type="submit"
+                    disabled={customScanLoading}
+                    className="bg-cyan-500 hover:bg-cyan-600 text-slate-950 font-bold px-4 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-lg hover:shadow-cyan-500/20 active:scale-95 disabled:opacity-50 cursor-pointer"
+                  >
+                    {customScanLoading ? (
+                      <div className="h-3.5 w-3.5 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
+                    ) : 'SCAN'}
+                  </button>
+                </form>
 
-            {customScanResult && (
-              <div className="bg-slate-900/60 p-3 rounded-xl border border-slate-850 font-mono text-[11px] animate-fadeIn">
-                {customScanResult.status === 'success' ? (
-                  <div className="space-y-2">
-                    <div className="flex justify-between items-center pb-1 border-b border-slate-800/50">
-                      <span className="font-bold text-slate-200">{customScanResult.ticker}</span>
-                      <span className="text-[10px] text-slate-500">{customScanResult.timestamp}</span>
-                    </div>
-                    <div className="grid grid-cols-2 gap-2 text-[10px]">
-                      <div>
-                        <span className="text-slate-500 uppercase tracking-wider block">Price</span>
-                        <span className="text-slate-200 font-bold">₹{customScanResult.current_price.toFixed(2)}</span>
+                {customScanResult && (
+                  <div className="bg-slate-900/60 p-3 rounded-xl border border-slate-850 font-mono text-[11px] animate-fadeIn relative">
+                    <button
+                      type="button"
+                      onClick={() => setCustomScanResult(null)}
+                      className="absolute top-2 right-2 text-slate-500 hover:text-rose-450 transition-colors font-bold text-[8px] tracking-wider uppercase bg-slate-950/40 hover:bg-rose-500/10 px-1.5 py-0.5 rounded cursor-pointer"
+                    >
+                      Clear
+                    </button>
+                    {customScanResult.status === 'success' ? (
+                      <div className="space-y-2">
+                        <div className="flex justify-between items-center pb-1 border-b border-slate-800/50">
+                          <span className="font-bold text-slate-200">{customScanResult.ticker}</span>
+                          <span className="text-[10px] text-slate-500">{customScanResult.timestamp}</span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2 text-[10px]">
+                          <div>
+                            <span className="text-slate-500 uppercase tracking-wider block">Price</span>
+                            <span className="text-slate-200 font-bold">₹{customScanResult.current_price.toFixed(2)}</span>
+                          </div>
+                          <div>
+                            <span className="text-slate-500 uppercase tracking-wider block">Trend</span>
+                            <span className={`font-bold ${customScanResult.trend === 'BULLISH' ? 'text-emerald-400' : 'text-rose-400'}`}>{customScanResult.trend}</span>
+                          </div>
+                          <div>
+                            <span className="text-slate-500 uppercase tracking-wider block">Structure</span>
+                            <span className="text-slate-300 font-semibold">{customScanResult.structure}</span>
+                          </div>
+                          <div>
+                            <span className="text-slate-500 uppercase tracking-wider block">SMC Signal</span>
+                            <span className={`font-black ${customScanResult.signal === 'BUY' ? 'text-emerald-400' : (customScanResult.signal === 'SELL' ? 'text-rose-400' : 'text-slate-400')}`}>
+                              {customScanResult.signal}
+                            </span>
+                          </div>
+                        </div>
+                        {customScanResult.bullish_fvg !== 'None' && (
+                          <div className="bg-emerald-950/20 p-2 rounded border border-emerald-900/30 text-[10px]">
+                            <span className="text-emerald-400/80 font-bold block mb-0.5">Bullish FVG Zone</span>
+                            <span className="text-emerald-300 font-bold">{customScanResult.bullish_fvg}</span>
+                          </div>
+                        )}
+                        {customScanResult.bearish_fvg !== 'None' && (
+                          <div className="bg-rose-950/20 p-2 rounded border border-rose-900/30 text-[10px]">
+                            <span className="text-rose-400/80 font-bold block mb-0.5">Bearish FVG Zone</span>
+                            <span className="text-rose-300 font-bold">{customScanResult.bearish_fvg}</span>
+                          </div>
+                        )}
+                        <p className="text-[10px] text-slate-400 border-t border-slate-800/40 pt-2 leading-relaxed">
+                          {customScanResult.explanation}
+                        </p>
                       </div>
-                      <div>
-                        <span className="text-slate-500 uppercase tracking-wider block">Trend</span>
-                        <span className={`font-bold ${customScanResult.trend === 'BULLISH' ? 'text-emerald-400' : 'text-rose-400'}`}>{customScanResult.trend}</span>
-                      </div>
-                      <div>
-                        <span className="text-slate-500 uppercase tracking-wider block">Structure</span>
-                        <span className="text-slate-300 font-semibold">{customScanResult.structure}</span>
-                      </div>
-                      <div>
-                        <span className="text-slate-500 uppercase tracking-wider block">SMC Signal</span>
-                        <span className={`font-black ${customScanResult.signal === 'BUY' ? 'text-emerald-400' : (customScanResult.signal === 'SELL' ? 'text-rose-400' : 'text-slate-400')}`}>
-                          {customScanResult.signal}
-                        </span>
-                      </div>
-                    </div>
-                    {customScanResult.bullish_fvg !== 'None' && (
-                      <div className="bg-emerald-950/20 p-2 rounded border border-emerald-900/30 text-[10px]">
-                        <span className="text-emerald-400/80 font-bold block mb-0.5">Bullish FVG Zone</span>
-                        <span className="text-emerald-300 font-bold">{customScanResult.bullish_fvg}</span>
+                    ) : (
+                      <div className="text-rose-400 text-center py-2 flex items-center justify-center gap-1.5">
+                        <span>⚠️</span>
+                        <span>{customScanResult.message}</span>
                       </div>
                     )}
-                    {customScanResult.bearish_fvg !== 'None' && (
-                      <div className="bg-rose-950/20 p-2 rounded border border-rose-900/30 text-[10px]">
-                        <span className="text-rose-400/80 font-bold block mb-0.5">Bearish FVG Zone</span>
-                        <span className="text-rose-300 font-bold">{customScanResult.bearish_fvg}</span>
-                      </div>
-                    )}
-                    <p className="text-[10px] text-slate-400 border-t border-slate-800/40 pt-2 leading-relaxed">
-                      {customScanResult.explanation}
-                    </p>
-                  </div>
-                ) : (
-                  <div className="text-rose-400 text-center py-2 flex items-center justify-center gap-1.5">
-                    <span>⚠️</span>
-                    <span>{customScanResult.message}</span>
                   </div>
                 )}
-              </div>
+              </>
             )}
           </div>
           
           {/* ACTIVE TRADES (Current Ledger) - Always visible, fully expanded by default */}
           <div className="border border-slate-800 bg-[#070b15]/95 rounded-2xl p-4 shadow-2xl h-fit">
-            <div className="flex items-center justify-between border-b border-slate-800/80 pb-3 mb-4">
-              <div className="flex items-center gap-2">
-                <span className="inline-block h-3 w-3 rounded-full bg-emerald-500 animate-pulse" />
-                <h2 className="text-xs font-bold font-mono tracking-widest text-slate-400 uppercase">ACTIVE LEDGER ({activeTrades.length})</h2>
+            <div className="flex flex-col gap-2.5 border-b border-slate-800/80 pb-3 mb-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="inline-block h-3 w-3 rounded-full bg-emerald-500 animate-pulse" />
+                  <h2 className="text-xs font-bold font-mono tracking-widest text-slate-400 uppercase">ACTIVE LEDGER ({activeTrades.length})</h2>
+                </div>
+                {/* TRADING MODE TOGGLE */}
+                <div className="flex items-center gap-1 bg-slate-900/60 p-0.5 rounded-md border border-slate-800 font-mono text-[9px] font-bold">
+                  <button 
+                    onClick={() => setTradeMode('MOCK')} 
+                    className={`px-1.5 py-0.5 rounded cursor-pointer transition-all ${tradeMode === 'MOCK' ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30' : 'text-slate-500'}`}
+                  >
+                    MOCK
+                  </button>
+                  <button 
+                    onClick={() => setTradeMode('LIVE')} 
+                    className={`px-1.5 py-0.5 rounded cursor-pointer transition-all ${tradeMode === 'LIVE' ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30' : 'text-slate-500'}`}
+                  >
+                    LIVE
+                  </button>
+                </div>
               </div>
-              <span className="text-[10px] text-slate-500 font-mono">live tracking</span>
+              
+              <div className="flex items-center justify-between">
+                <span className="text-[9px] text-slate-500 font-mono uppercase tracking-widest">
+                  mode: <span className={tradeMode === 'LIVE' ? 'text-rose-400' : 'text-cyan-400'}>{tradeMode}</span>
+                </span>
+                
+                {/* KILL SWITCH BUTTON */}
+                <button
+                  onClick={triggerKillAll}
+                  disabled={activeTrades.length === 0}
+                  className={`flex items-center gap-1 px-2.5 py-1 rounded text-[9px] font-bold font-mono tracking-widest transition-all ${
+                    activeTrades.length > 0 
+                      ? 'bg-rose-600/20 hover:bg-rose-600/40 text-rose-400 hover:text-rose-300 border border-rose-500/30 cursor-pointer animate-pulse'
+                      : 'bg-slate-900/40 text-slate-600 border border-slate-800/40 cursor-not-allowed'
+                  }`}
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+                  FLATTEN ALL
+                </button>
+              </div>
             </div>
 
             <div className="flex flex-col gap-3 max-h-[350px] overflow-y-auto pr-1 scrollbar-thin">
@@ -4857,21 +5169,43 @@ export default function Dashboard() {
 
             {isHistoryOpen && (
               <div className="mt-4 space-y-4 animate-fadeIn">
-                {/* History Filter Tabs */}
-                <div className="grid grid-cols-4 gap-1 bg-slate-900/60 p-1 rounded-lg border border-slate-800/50 font-mono text-[9px]">
-                  {(['TODAY', 'WEEKLY', 'MONTHLY', 'ALL'] as const).map((filter) => (
+                <div className="flex items-center justify-between gap-2">
+                  {/* History Filter Tabs */}
+                  <div className="grid grid-cols-4 gap-1 bg-slate-900/60 p-1 rounded-lg border border-slate-800/50 font-mono text-[9px] flex-grow">
+                    {(['TODAY', 'WEEKLY', 'MONTHLY', 'ALL'] as const).map((filter) => (
+                      <button
+                        key={filter}
+                        onClick={() => setLedgerFilter(filter)}
+                        className={`py-1.5 px-0.5 rounded-md font-bold text-center cursor-pointer transition-all ${
+                          ledgerFilter === filter
+                            ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/30'
+                            : 'text-slate-500 hover:text-slate-300 border border-transparent'
+                        }`}
+                      >
+                        {filter}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* CSV / JSON Downloads */}
+                  <div className="flex gap-1 shrink-0 font-mono text-[8px] font-bold">
                     <button
-                      key={filter}
-                      onClick={() => setLedgerFilter(filter)}
-                      className={`py-1.5 px-0.5 rounded-md font-bold text-center cursor-pointer transition-all ${
-                        ledgerFilter === filter
-                          ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/30'
-                          : 'text-slate-500 hover:text-slate-300 border border-transparent'
-                      }`}
+                      onClick={downloadCSV}
+                      disabled={ledgerFilteredTrades.length === 0}
+                      className="border border-slate-800 bg-slate-900/60 hover:text-cyan-400 disabled:opacity-50 hover:border-cyan-500/30 px-2 py-2 rounded-lg cursor-pointer transition-all uppercase"
+                      title="Download CSV report"
                     >
-                      {filter}
+                      CSV
                     </button>
-                  ))}
+                    <button
+                      onClick={downloadJSON}
+                      disabled={ledgerFilteredTrades.length === 0}
+                      className="border border-slate-800 bg-slate-900/60 hover:text-cyan-400 disabled:opacity-50 hover:border-cyan-500/30 px-2 py-2 rounded-lg cursor-pointer transition-all uppercase"
+                      title="Download JSON report"
+                    >
+                      JSON
+                    </button>
+                  </div>
                 </div>
 
                 {/* Ledger scrollable container */}
@@ -5027,93 +5361,106 @@ export default function Dashboard() {
                 <div className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
                 <span className="text-xs font-bold tracking-wider bg-gradient-to-r from-slate-100 to-cyan-400 bg-clip-text text-transparent">BIFROST // QUANT_AI</span>
               </div>
-              <span className="text-[9px] text-slate-500 uppercase tracking-widest">Active Terminal</span>
-            </div>
-
-            {/* Suggestions Quick Buttons */}
-            <div className="p-2 border-b border-slate-800/40 bg-slate-900/10 flex gap-1.5 overflow-x-auto scrollbar-none text-[9px] font-bold text-slate-400 shrink-0">
               <button 
-                onClick={(e) => sendChatMessage(e, "scan RELIANCE")} 
-                className="px-2 py-1 rounded bg-slate-900/60 border border-slate-800/60 hover:text-cyan-400 hover:border-cyan-500/30 transition-all whitespace-nowrap cursor-pointer"
+                onClick={() => setChatMessages([])} 
+                className="text-[9px] text-slate-500 hover:text-slate-350 font-bold uppercase tracking-wider bg-transparent border-0 cursor-pointer"
               >
-                🔍 Scan RELIANCE
-              </button>
-              <button 
-                onClick={(e) => sendChatMessage(e, "show recent trades")} 
-                className="px-2 py-1 rounded bg-slate-900/60 border border-slate-800/60 hover:text-cyan-400 hover:border-cyan-500/30 transition-all whitespace-nowrap cursor-pointer"
-              >
-                📊 Show Trades
-              </button>
-              <button 
-                onClick={(e) => sendChatMessage(e, "check engine status")} 
-                className="px-2 py-1 rounded bg-slate-900/60 border border-slate-800/60 hover:text-cyan-400 hover:border-cyan-500/30 transition-all whitespace-nowrap cursor-pointer"
-              >
-                🔌 Engine Health
+                Clear
               </button>
             </div>
 
-            {/* Messages Body */}
-            <div className="flex-1 p-4 overflow-y-auto space-y-4 text-xs scrollbar-thin">
-              {chatMessages.map((msg, i) => (
-                <div key={i} className={`flex flex-col ${msg.sender === 'user' ? 'items-end' : 'items-start'}`}>
-                  <div className={`max-w-[85%] rounded-xl p-3 leading-relaxed ${
-                    msg.sender === 'user' 
-                      ? 'bg-cyan-500/10 text-cyan-200 border border-cyan-500/25 rounded-tr-none' 
-                      : 'bg-slate-900/80 text-slate-350 border border-slate-850/60 rounded-tl-none'
-                  }`}>
-                    {msg.text.split('\n').map((line, idx) => {
-                      if (line.startsWith('### ')) {
-                        return <h4 key={idx} className="font-bold text-slate-200 mb-1.5 border-b border-slate-800/50 pb-0.5">{line.replace('### ', '')}</h4>;
-                      }
-                      if (line.startsWith('* ')) {
-                        return <div key={idx} className="pl-3 relative before:content-['•'] before:absolute before:left-0 before:text-cyan-400 mb-1">{line.replace('* ', '')}</div>;
-                      }
-                      let processed = line;
-                      if (processed.includes('**')) {
-                        const parts = processed.split('**');
-                        return (
-                          <div key={idx} className="mb-0.5">
-                            {parts.map((p, pIdx) => pIdx % 2 === 1 ? <strong key={pIdx} className="text-cyan-400 font-bold">{p}</strong> : p)}
-                          </div>
-                        );
-                      }
-                      return <p key={idx} className="mb-0.5">{processed}</p>;
-                    })}
-                  </div>
-                  <span className="text-[8px] text-slate-500 mt-1 uppercase tracking-wider">
-                    {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}
-                  </span>
+            {isTokenExpired ? (
+              <div className="flex-grow flex items-center justify-center p-4">
+                <InlinePremiumUpgradeBlocker feature="AI Chat Assistant" onRequestUpgrade={requestPremiumUpgrade} />
+              </div>
+            ) : (
+              <>
+                {/* Suggestions Quick Buttons */}
+                <div className="p-2 border-b border-slate-800/40 bg-slate-900/10 flex gap-1.5 overflow-x-auto scrollbar-none text-[9px] font-bold text-slate-400 shrink-0">
+                  <button 
+                    onClick={(e) => sendChatMessage(e, "scan RELIANCE")} 
+                    className="px-2 py-1 rounded bg-slate-900/60 border border-slate-800/60 hover:text-cyan-400 hover:border-cyan-500/30 transition-all whitespace-nowrap cursor-pointer"
+                  >
+                    🔍 Scan RELIANCE
+                  </button>
+                  <button 
+                    onClick={(e) => sendChatMessage(e, "show recent trades")} 
+                    className="px-2 py-1 rounded bg-slate-900/60 border border-slate-800/60 hover:text-cyan-400 hover:border-cyan-500/30 transition-all whitespace-nowrap cursor-pointer"
+                  >
+                    📊 Show Trades
+                  </button>
+                  <button 
+                    onClick={(e) => sendChatMessage(e, "check engine status")} 
+                    className="px-2 py-1 rounded bg-slate-900/60 border border-slate-800/60 hover:text-cyan-400 hover:border-cyan-500/30 transition-all whitespace-nowrap cursor-pointer"
+                  >
+                    🔌 Engine Health
+                  </button>
                 </div>
-              ))}
-              {chatLoading && (
-                <div className="flex flex-col items-start animate-pulse">
-                  <div className="bg-slate-900/80 border border-slate-850/60 rounded-xl rounded-tl-none p-3 flex items-center gap-1.5">
-                    <span className="h-1.5 w-1.5 bg-cyan-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                    <span className="h-1.5 w-1.5 bg-cyan-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                    <span className="h-1.5 w-1.5 bg-cyan-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-                  </div>
-                </div>
-              )}
-              <div ref={chatEndRef} />
-            </div>
 
-            {/* Input Form */}
-            <form onSubmit={sendChatMessage} className="p-3 border-t border-slate-800/80 bg-slate-950/40 flex gap-2 shrink-0">
-              <input
-                type="text"
-                placeholder="Ask Bifrost AI..."
-                value={chatInput}
-                onChange={(e) => setChatInput(e.target.value)}
-                className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-cyan-500 placeholder:text-slate-600 transition-colors font-bold"
-              />
-              <button
-                type="submit"
-                disabled={chatLoading}
-                className="bg-cyan-500 hover:bg-cyan-600 disabled:opacity-50 text-slate-950 font-black px-4 py-2 rounded-xl text-xs transition-all active:scale-95 cursor-pointer font-bold"
-              >
-                SEND
-              </button>
-            </form>
+                {/* Messages Body */}
+                <div className="flex-1 p-4 overflow-y-auto space-y-4 text-xs scrollbar-thin">
+                  {chatMessages.map((msg, i) => (
+                    <div key={i} className={`flex flex-col ${msg.sender === 'user' ? 'items-end' : 'items-start'}`}>
+                      <div className={`max-w-[85%] rounded-xl p-3 leading-relaxed ${
+                        msg.sender === 'user' 
+                          ? 'bg-cyan-500/10 text-cyan-200 border border-cyan-500/25 rounded-tr-none' 
+                          : 'bg-slate-900/80 text-slate-350 border border-slate-850/60 rounded-tl-none'
+                      }`}>
+                        {msg.text.split('\n').map((line, idx) => {
+                          if (line.startsWith('### ')) {
+                            return <h4 key={idx} className="font-bold text-slate-200 mb-1.5 border-b border-slate-800/50 pb-0.5">{line.replace('### ', '')}</h4>;
+                          }
+                          if (line.startsWith('* ')) {
+                            return <div key={idx} className="pl-3 relative before:content-['•'] before:absolute before:left-0 before:text-cyan-400 mb-1">{line.replace('* ', '')}</div>;
+                          }
+                          let processed = line;
+                          if (processed.includes('**')) {
+                            const parts = processed.split('**');
+                            return (
+                              <div key={idx} className="mb-0.5">
+                                {parts.map((p, pIdx) => pIdx % 2 === 1 ? <strong key={pIdx} className="text-cyan-400 font-bold">{p}</strong> : p)}
+                              </div>
+                            );
+                          }
+                          return <p key={idx} className="mb-0.5">{processed}</p>;
+                        })}
+                      </div>
+                      <span className="text-[8px] text-slate-500 mt-1 uppercase tracking-wider">
+                        {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}
+                      </span>
+                    </div>
+                  ))}
+                  {chatLoading && (
+                    <div className="flex flex-col items-start animate-pulse">
+                      <div className="bg-slate-900/80 border border-slate-850/60 rounded-xl rounded-tl-none p-3 flex items-center gap-1.5">
+                        <span className="h-1.5 w-1.5 bg-cyan-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                        <span className="h-1.5 w-1.5 bg-cyan-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                        <span className="h-1.5 w-1.5 bg-cyan-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                      </div>
+                    </div>
+                  )}
+                  <div ref={chatEndRef} />
+                </div>
+
+                {/* Input Form */}
+                <form onSubmit={sendChatMessage} className="p-3 border-t border-slate-800/80 bg-slate-950/40 flex gap-2 shrink-0">
+                  <input
+                    type="text"
+                    placeholder="Ask Bifrost AI..."
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-cyan-500 placeholder:text-slate-600 transition-colors font-bold"
+                  />
+                  <button
+                    type="submit"
+                    disabled={chatLoading}
+                    className="bg-cyan-500 hover:bg-cyan-600 disabled:opacity-50 text-slate-950 font-black px-4 py-2 rounded-xl text-xs transition-all active:scale-95 cursor-pointer font-bold"
+                  >
+                    SEND
+                  </button>
+                </form>
+              </>
+            )}
           </div>
         )}
       </div>
