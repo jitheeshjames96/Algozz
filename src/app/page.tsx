@@ -1591,6 +1591,26 @@ export default function Dashboard() {
     }
   };
 
+  const handleRequestMockAccount = async () => {
+    try {
+      const headers = await getAuthHeaders();
+      const res = await fetch(`${BACKEND_URL}/api/subscription/request`, {
+        method: 'POST',
+        headers
+      });
+      if (res.ok) {
+        alert("Mock account request sent to admin successfully!");
+        const { data: profileData } = await supabase.from('user_profiles').select('*').eq('id', user.id).single();
+        if (profileData) setUserProfile(profileData);
+      } else {
+        alert("Failed to request mock account.");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Error requesting mock account: " + err.message);
+    }
+  };
+
   const downloadCSV = () => {
     if (ledgerFilteredTrades.length === 0) return;
     const headers = ['id', 'symbol', 'direction', 'entry_price', 'exit_price', 'quantity', 'entry_time', 'exit_time', 'status', 'pnl', 'setup_logic'];
@@ -1823,6 +1843,18 @@ export default function Dashboard() {
   const [newHoldingSymbol, setNewHoldingSymbol] = useState('');
   const [newHoldingPrice, setNewHoldingPrice] = useState('');
   const [newHoldingQty, setNewHoldingQty] = useState('');
+
+  // Lifted Swing watchlist & search states
+  const [wlSymbol, setWlSymbol] = useState('');
+  const [wlName, setWlName] = useState('');
+  const [wlSector, setWlSector] = useState('Energy');
+  const [wlPrice, setWlPrice] = useState('');
+  const [wlTarget1, setWlTarget1] = useState('');
+  const [wlTarget2, setWlTarget2] = useState('');
+  const [wlStopLoss, setWlStopLoss] = useState('');
+  const [wlSaving, setWlSaving] = useState(false);
+  const [picksSearch, setPicksSearch] = useState('');
+
 
   // Proportional Weights Slider Adjuster
   const handleWeightChange = (key: string, val: number) => {
@@ -2311,17 +2343,8 @@ export default function Dashboard() {
 
       if (tradeMode === 'MOCK') {
         if (mockAccountSource === 'ADMIN') {
-          // Fallback to admin user_id for showcase trades
-          const { data: adminProfiles } = await supabase
-            .from('user_profiles')
-            .select('id')
-            .eq('role', 'admin')
-            .limit(1);
-          if (adminProfiles && adminProfiles.length > 0) {
-            queryUserId = adminProfiles[0].id;
-          } else {
-            queryUserId = undefined;
-          }
+          // Showcase trades have user_id IS NULL and summary has id = 1
+          queryUserId = undefined;
         } else {
           // mockAccountSource === 'MY'
           queryUserId = user?.id;
@@ -2351,7 +2374,9 @@ export default function Dashboard() {
       // 2. Fetch trades from Supabase
       let tradesQuery = supabase.from(tradesTable).select('*');
       if (queryUserId) {
-        if (isAdmin || isIntegrated || (tradeMode === 'MOCK' && mockAccountSource === 'MY')) {
+        if ((isAdmin || isIntegrated) && tradeMode === 'LIVE') {
+          tradesQuery = tradesQuery.eq('user_id', queryUserId);
+        } else if (tradeMode === 'MOCK' && mockAccountSource === 'MY') {
           tradesQuery = tradesQuery.eq('user_id', queryUserId);
         } else {
           tradesQuery = tradesQuery.or(`user_id.eq.${queryUserId},user_id.is.null`);
@@ -3286,841 +3311,126 @@ export default function Dashboard() {
     );
   }
 
-  // ── Swing Trading Dashboard Layout Component ──
-  const SwingTradingDashboard = () => {
-    // Watchlist add states (for form inputs)
-    const [wlSymbol, setWlSymbol] = useState('');
-    const [wlName, setWlName] = useState('');
-    const [wlSector, setWlSector] = useState('Energy');
-    const [wlPrice, setWlPrice] = useState('');
-    const [wlTarget1, setWlTarget1] = useState('');
-    const [wlTarget2, setWlTarget2] = useState('');
-    const [wlStopLoss, setWlStopLoss] = useState('');
-    const [wlSaving, setWlSaving] = useState(false);
+  // ── Swing Trading Handlers ──
+  const handleAddWatchlist = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!wlSymbol.trim()) return;
+    setWlSaving(true);
+    try {
+      const headers = await getAuthHeaders();
+      const res = await fetch(`${BACKEND_URL}/api/swing/watchlist/add`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          symbol: wlSymbol.trim().toUpperCase(),
+          name: wlName.trim() || wlSymbol.trim().toUpperCase(),
+          sector: wlSector,
+          market: "IN"
+        })
+      });
+      if (res.ok) {
+        const payload = {
+          symbol: wlSymbol.trim().toUpperCase(),
+          name: wlName.trim() || wlSymbol.trim().toUpperCase(),
+          sector: wlSector,
+          price: wlPrice ? parseFloat(wlPrice) : null,
+          target_1: wlTarget1 ? parseFloat(wlTarget1) : null,
+          target_2: wlTarget2 ? parseFloat(wlTarget2) : null,
+          stop_loss: wlStopLoss ? parseFloat(wlStopLoss) : null,
+          status: "ACTIVE"
+        };
+        const { error } = await supabase.from('recommendations').upsert(payload, { onConflict: 'symbol' });
+        if (error) console.error("Error upserting targets in recommendations:", error);
 
-    // Smart Picks states
-    const [picksSearch, setPicksSearch] = useState('');
-
-    const handleAddWatchlist = async (e: React.FormEvent) => {
-      e.preventDefault();
-      if (!wlSymbol.trim()) return;
-      setWlSaving(true);
-      try {
-        const headers = await getAuthHeaders();
-        const res = await fetch(`${BACKEND_URL}/api/swing/watchlist/add`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({
-            symbol: wlSymbol.trim().toUpperCase(),
-            name: wlName.trim() || wlSymbol.trim().toUpperCase(),
-            sector: wlSector,
-            market: "IN"
-          })
-        });
-        if (res.ok) {
-          // Add manually if DB updated
-          const payload = {
-            symbol: wlSymbol.trim().toUpperCase(),
-            name: wlName.trim() || wlSymbol.trim().toUpperCase(),
-            sector: wlSector,
-            price: wlPrice ? parseFloat(wlPrice) : null,
-            target_1: wlTarget1 ? parseFloat(wlTarget1) : null,
-            target_2: wlTarget2 ? parseFloat(wlTarget2) : null,
-            stop_loss: wlStopLoss ? parseFloat(wlStopLoss) : null,
-            status: "ACTIVE"
-          };
-          
-          // Upsert in Supabase recommendations directly to also store targets
-          const { error } = await supabase.from('recommendations').upsert(payload, { onConflict: 'symbol' });
-          if (error) console.error("Error upserting targets in recommendations:", error);
-
-          setWlSymbol('');
-          setWlName('');
-          setWlPrice('');
-          setWlTarget1('');
-          setWlTarget2('');
-          setWlStopLoss('');
-          loadSwingData();
-        } else {
-          const err = await res.json();
-          alert(`Failed to add watchlist item: ${err.detail || 'Server error'}`);
-        }
-      } catch (err) {
-        console.error(err);
-      } finally {
-        setWlSaving(false);
+        setWlSymbol('');
+        setWlName('');
+        setWlPrice('');
+        setWlTarget1('');
+        setWlTarget2('');
+        setWlStopLoss('');
+        loadSwingData();
+      } else {
+        const err = await res.json();
+        alert(`Failed to add watchlist item: ${err.detail || 'Server error'}`);
       }
-    };
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setWlSaving(false);
+    }
+  };
 
-    const handleRemoveWatchlist = async (symbol: string) => {
-      if (!confirm(`Are you sure you want to remove ${symbol} from the watchlist?`)) return;
-      try {
-        const headers = await getAuthHeaders();
-        const res = await fetch(`${BACKEND_URL}/api/swing/watchlist/remove`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ symbol })
-        });
-        if (res.ok) {
-          loadSwingData();
-        }
-      } catch (err) {
-        console.error(err);
+  const handleRemoveWatchlist = async (symbol: string) => {
+    if (!confirm(`Are you sure you want to remove ${symbol} from the watchlist?`)) return;
+    try {
+      const headers = await getAuthHeaders();
+      const res = await fetch(`${BACKEND_URL}/api/swing/watchlist/remove`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ symbol })
+      });
+      if (res.ok) {
+        loadSwingData();
       }
-    };
+    } catch (err) {
+      console.error(err);
+    }
+  };
 
-    const handleAddHolding = async (e: React.FormEvent) => {
-      e.preventDefault();
-      if (!newHoldingSymbol.trim() || !newHoldingPrice || !newHoldingQty) return;
-      try {
-        const headers = await getAuthHeaders();
-        const res = await fetch(`${BACKEND_URL}/api/swing/holdings/update`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({
-            symbol: newHoldingSymbol.trim().toUpperCase(),
-            average_buy_price: parseFloat(newHoldingPrice),
-            quantity: parseInt(newHoldingQty)
-          })
-        });
-        if (res.ok) {
-          setNewHoldingSymbol('');
-          setNewHoldingPrice('');
-          setNewHoldingQty('');
-          loadSwingData();
-        } else {
-          const err = await res.json();
-          alert(`Failed to update holding: ${err.detail || 'Server error'}`);
-        }
-      } catch (err) {
-        console.error(err);
+  const handleAddHolding = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newHoldingSymbol.trim() || !newHoldingPrice || !newHoldingQty) return;
+    try {
+      const headers = await getAuthHeaders();
+      const res = await fetch(`${BACKEND_URL}/api/swing/holdings/update`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          symbol: newHoldingSymbol.trim().toUpperCase(),
+          average_buy_price: parseFloat(newHoldingPrice),
+          quantity: parseInt(newHoldingQty)
+        })
+      });
+      if (res.ok) {
+        setNewHoldingSymbol('');
+        setNewHoldingPrice('');
+        setNewHoldingQty('');
+        loadSwingData();
+      } else {
+        const err = await res.json();
+        alert(`Failed to update holding: ${err.detail || 'Server error'}`);
       }
-    };
+    } catch (err) {
+      console.error(err);
+    }
+  };
 
-    const handleTriggerSignal = async (item: any, comps: any) => {
-      const setup = calcTradeSetup(item.price || 100, {}, { atr: (item.price || 100) * 0.02 });
-      try {
-        const headers = await getAuthHeaders();
-        const res = await fetch(`${BACKEND_URL}/api/swing/signal/create`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({
-            symbol: item.symbol,
-            entry_price: item.price || 100,
-            target_price: setup.target2,
-            stop_loss: setup.stopLoss,
-            composite_score: comps.total,
-            status: "ACTIVE"
-          })
-        });
-        if (res.ok) {
-          alert(`Trade signal successfully triggered for ${item.symbol}!`);
-          loadSwingData();
-        } else {
-          const err = await res.json();
-          alert(`Failed to trigger signal: ${err.detail || 'Server error'}`);
-        }
-      } catch (err) {
-        console.error(err);
+  const handleTriggerSignal = async (item: any, comps: any) => {
+    const setup = calcTradeSetup(item.price || 100, {}, { atr: (item.price || 100) * 0.02 });
+    try {
+      const headers = await getAuthHeaders();
+      const res = await fetch(`${BACKEND_URL}/api/swing/signal/create`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          symbol: item.symbol,
+          entry_price: item.price || 100,
+          target_price: setup.target2,
+          stop_loss: setup.stopLoss,
+          composite_score: comps.total,
+          status: "ACTIVE"
+        })
+      });
+      if (res.ok) {
+        alert(`Trade signal successfully triggered for ${item.symbol}!`);
+        loadSwingData();
+      } else {
+        const err = await res.json();
+        alert(`Failed to trigger signal: ${err.detail || 'Server error'}`);
       }
-    };
-
-    // Filter screener list
-    const filteredScreener = swingWatchlist.filter(item => {
-      const comps = getComponentsForSymbol(item.symbol);
-      const ratingRes = compositeScore(comps.fund, comps.tech, comps.mom, comps.sent, comps.inst, item.price || 100, 100, swingWeights);
-      
-      const matchSector = screenSector === 'ALL' || item.sector?.toUpperCase() === screenSector.toUpperCase();
-      const matchRating = screenRating === 'ALL' || ratingRes.ratingClass.toUpperCase() === screenRating.toUpperCase();
-      
-      // Determine market cap using symbol index
-      let cap = 'Large Cap';
-      if (item.symbol.charCodeAt(0) % 3 === 1) cap = 'Mid Cap';
-      else if (item.symbol.charCodeAt(0) % 3 === 2) cap = 'Small Cap';
-      const matchCap = screenCap === 'ALL' || cap.toUpperCase() === screenCap.toUpperCase();
-
-      return matchSector && matchRating && matchCap;
-    });
-
-    return (
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 font-mono text-xs">
-        {/* Left Column: Sliders */}
-        <div className="lg:col-span-1 border border-slate-800 bg-[#070b15]/95 rounded-2xl p-5 shadow-2xl flex flex-col gap-5">
-          <div className="border-b border-slate-850 pb-3 flex justify-between items-center">
-            <h2 className="text-xs font-black tracking-widest text-slate-400 uppercase">COMPOSITE SCORING WEIGHTS</h2>
-            <div className="px-2 py-0.5 rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/25 text-[10px] font-black animate-pulse">
-              SUM: 100%
-            </div>
-          </div>
-
-          <div className="space-y-4">
-            <div>
-              <div className="flex justify-between font-bold mb-1">
-                <span className="text-slate-400">Fundamental Weight</span>
-                <span className="text-cyan-400">{swingWeights.fundamental}%</span>
-              </div>
-              <input
-                type="range"
-                min="0"
-                max="100"
-                value={swingWeights.fundamental}
-                onChange={(e) => handleWeightChange('fundamental', parseInt(e.target.value))}
-                className="w-full h-1 bg-slate-900 rounded-lg appearance-none cursor-pointer accent-cyan-500"
-              />
-            </div>
-
-            <div>
-              <div className="flex justify-between font-bold mb-1">
-                <span className="text-slate-400">Technical Weight</span>
-                <span className="text-cyan-400">{swingWeights.technical}%</span>
-              </div>
-              <input
-                type="range"
-                min="0"
-                max="100"
-                value={swingWeights.technical}
-                onChange={(e) => handleWeightChange('technical', parseInt(e.target.value))}
-                className="w-full h-1 bg-slate-900 rounded-lg appearance-none cursor-pointer accent-cyan-500"
-              />
-            </div>
-
-            <div>
-              <div className="flex justify-between font-bold mb-1">
-                <span className="text-slate-400">Momentum Weight</span>
-                <span className="text-cyan-400">{swingWeights.momentum}%</span>
-              </div>
-              <input
-                type="range"
-                min="0"
-                max="100"
-                value={swingWeights.momentum}
-                onChange={(e) => handleWeightChange('momentum', parseInt(e.target.value))}
-                className="w-full h-1 bg-slate-900 rounded-lg appearance-none cursor-pointer accent-cyan-500"
-              />
-            </div>
-
-            <div>
-              <div className="flex justify-between font-bold mb-1">
-                <span className="text-slate-400">Sentiment Weight</span>
-                <span className="text-cyan-400">{swingWeights.sentiment}%</span>
-              </div>
-              <input
-                type="range"
-                min="0"
-                max="100"
-                value={swingWeights.sentiment}
-                onChange={(e) => handleWeightChange('sentiment', parseInt(e.target.value))}
-                className="w-full h-1 bg-slate-900 rounded-lg appearance-none cursor-pointer accent-cyan-500"
-              />
-            </div>
-
-            <div>
-              <div className="flex justify-between font-bold mb-1">
-                <span className="text-slate-400">Institutional Weight</span>
-                <span className="text-cyan-400">{swingWeights.institutional}%</span>
-              </div>
-              <input
-                type="range"
-                min="0"
-                max="100"
-                value={swingWeights.institutional}
-                onChange={(e) => handleWeightChange('institutional', parseInt(e.target.value))}
-                className="w-full h-1 bg-slate-900 rounded-lg appearance-none cursor-pointer accent-cyan-500"
-              />
-            </div>
-          </div>
-
-          <div className="bg-slate-900/30 border border-slate-850 rounded-xl p-3 text-[10px] text-slate-500 leading-relaxed">
-            💡 Changing weights dynamically recalculates composite scores and buy recommendations for all watchlist symbols instantly.
-          </div>
-        </div>
-
-        {/* Right Column: Content Area */}
-        <div className="lg:col-span-2 flex flex-col gap-4">
-          <div className="border border-slate-800 bg-[#070b15]/95 rounded-2xl p-4 shadow-2xl">
-            {/* Tabs Selector */}
-            <div className="flex gap-4 border-b border-slate-850 pb-2 mb-4">
-              {['WATCHLIST', 'PICKS', 'PORTFOLIO', 'SCREENER', 'BACKTESTER', 'PERFORMANCE'].map((tab) => (
-                <button
-                  key={tab}
-                  onClick={() => setSwingActiveTab(tab as any)}
-                  className={`font-bold tracking-widest text-[10px] pb-1 border-b-2 transition-colors cursor-pointer ${
-                    swingActiveTab === tab ? 'border-amber-500 text-amber-400 font-extrabold' : 'border-transparent text-slate-400 hover:text-slate-200'
-                  }`}
-                >
-                  {tab}
-                </button>
-              ))}
-            </div>
-
-            {/* Sub-tab: Watchlist */}
-            {swingActiveTab === 'WATCHLIST' && (
-              <div className="space-y-4">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse text-[10px]">
-                    <thead>
-                      <tr className="border-b border-slate-800 text-slate-500 uppercase tracking-widest text-[8px]">
-                        <th className="py-2 px-1">Symbol</th>
-                        <th className="py-2 px-1">Name</th>
-                        <th className="py-2 px-1">Sector</th>
-                        <th className="py-2 px-1">Price</th>
-                        <th className="py-2 px-1">Target 1</th>
-                        <th className="py-2 px-1">Target 2</th>
-                        <th className="py-2 px-1">Stop Loss</th>
-                        <th className="py-2 px-1 text-center">Score</th>
-                        {userProfile?.role === 'admin' && <th className="py-2 px-1 text-right">Actions</th>}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {swingWatchlist.length === 0 ? (
-                        <tr>
-                          <td colSpan={9} className="text-center py-6 text-slate-500">
-                            No symbols found. Add symbols to scan.
-                          </td>
-                        </tr>
-                      ) : (
-                        swingWatchlist.map((item) => {
-                          const comps = getComponentsForSymbol(item.symbol);
-                          const ratingRes = compositeScore(comps.fund, comps.tech, comps.mom, comps.sent, comps.inst, item.price || 100, 100, swingWeights);
-                          const isSelected = selectedSwingSymbol === item.symbol;
-                          return (
-                            <tr
-                              key={item.id}
-                              onClick={() => {
-                                setSelectedSwingSymbol(item.symbol);
-                                setSelectedSwingName(item.name || item.symbol);
-                                setSelectedSwingSector(item.sector || 'Unknown');
-                              }}
-                              className={`border-b border-slate-850 hover:bg-slate-900/30 cursor-pointer transition-colors ${
-                                isSelected ? 'bg-amber-500/[0.02] border-l-2 border-l-amber-500' : ''
-                              }`}
-                            >
-                              <td className="py-2.5 px-1 font-bold text-slate-200">{item.symbol}</td>
-                              <td className="py-2.5 px-1 text-slate-400 truncate max-w-[100px]">{item.name}</td>
-                              <td className="py-2.5 px-1 text-slate-400">{item.sector}</td>
-                              <td className="py-2.5 px-1 text-slate-350">{item.price ? `₹${Number(item.price).toFixed(2)}` : '—'}</td>
-                              <td className="py-2.5 px-1 text-emerald-500">{item.target_1 ? `₹${Number(item.target_1).toFixed(2)}` : '—'}</td>
-                              <td className="py-2.5 px-1 text-emerald-400">{item.target_2 ? `₹${Number(item.target_2).toFixed(2)}` : '—'}</td>
-                              <td className="py-2.5 px-1 text-rose-400">{item.stop_loss ? `₹${Number(item.stop_loss).toFixed(2)}` : '—'}</td>
-                              <td className="py-2.5 px-1 text-center font-black">
-                                <span className={`px-1 py-0.5 rounded ${
-                                  ratingRes.total >= 80 ? 'bg-emerald-500/10 text-emerald-400' : ratingRes.total >= 65 ? 'bg-cyan-500/10 text-cyan-400' : 'bg-slate-500/10 text-slate-400'
-                                }`}>
-                                  {ratingRes.total}
-                                </span>
-                              </td>
-                              {userProfile?.role === 'admin' && (
-                                <td className="py-2.5 px-1 text-right">
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleRemoveWatchlist(item.symbol);
-                                    }}
-                                    className="text-[8px] bg-rose-500/15 text-rose-400 hover:bg-rose-500/25 px-1 py-0.5 rounded cursor-pointer"
-                                  >
-                                    REMOVE
-                                  </button>
-                                </td>
-                              )}
-                            </tr>
-                          );
-                        })
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-
-                {/* Admin Add Form */}
-                {userProfile?.role === 'admin' && (
-                  <form onSubmit={handleAddWatchlist} className="bg-slate-900/30 p-4 border border-slate-850 rounded-xl space-y-3">
-                    <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">ADD WATCHLIST ASSET TARGETS</h3>
-                    <div className="grid grid-cols-3 gap-3">
-                      <input
-                        type="text"
-                        placeholder="Symbol (e.g. INFOSYS)"
-                        value={wlSymbol}
-                        onChange={(e) => setWlSymbol(e.target.value)}
-                        className="bg-slate-950 border border-slate-800 rounded p-2 text-slate-200 focus:outline-none focus:border-amber-500 text-xs"
-                      />
-                      <input
-                        type="text"
-                        placeholder="Name (e.g. Infosys Ltd)"
-                        value={wlName}
-                        onChange={(e) => setWlName(e.target.value)}
-                        className="bg-slate-950 border border-slate-800 rounded p-2 text-slate-200 focus:outline-none focus:border-amber-500 text-xs"
-                      />
-                      <select
-                        value={wlSector}
-                        onChange={(e) => setWlSector(e.target.value)}
-                        className="bg-slate-950 border border-slate-800 rounded p-2 text-slate-400 focus:outline-none focus:border-amber-500 text-xs"
-                      >
-                        <option value="Energy">Energy</option>
-                        <option value="Technology">Technology</option>
-                        <option value="Finance">Finance</option>
-                        <option value="Consumer">Consumer</option>
-                        <option value="Healthcare">Healthcare</option>
-                        <option value="Automobile">Automobile</option>
-                      </select>
-                      <input
-                        type="number"
-                        step="0.01"
-                        placeholder="Price"
-                        value={wlPrice}
-                        onChange={(e) => setWlPrice(e.target.value)}
-                        className="bg-slate-950 border border-slate-800 rounded p-2 text-slate-200 focus:outline-none focus:border-amber-500 text-xs"
-                      />
-                      <input
-                        type="number"
-                        step="0.01"
-                        placeholder="Target 1"
-                        value={wlTarget1}
-                        onChange={(e) => setWlTarget1(e.target.value)}
-                        className="bg-slate-950 border border-slate-800 rounded p-2 text-slate-200 focus:outline-none focus:border-amber-500 text-xs"
-                      />
-                      <input
-                        type="number"
-                        step="0.01"
-                        placeholder="Target 2"
-                        value={wlTarget2}
-                        onChange={(e) => setWlTarget2(e.target.value)}
-                        className="bg-slate-950 border border-slate-800 rounded p-2 text-slate-200 focus:outline-none focus:border-amber-500 text-xs"
-                      />
-                      <input
-                        type="number"
-                        step="0.01"
-                        placeholder="Stop Loss"
-                        value={wlStopLoss}
-                        onChange={(e) => setWlStopLoss(e.target.value)}
-                        className="bg-slate-950 border border-slate-800 rounded p-2 text-slate-200 focus:outline-none focus:border-amber-500 text-xs"
-                      />
-                    </div>
-                    <button
-                      type="submit"
-                      disabled={wlSaving}
-                      className="bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold px-4 py-2 rounded-lg transition-all active:scale-95 disabled:opacity-50 cursor-pointer text-xs"
-                    >
-                      {wlSaving ? 'ADDING...' : 'ADD ASSET TARGETS'}
-                    </button>
-                  </form>
-                )}
-              </div>
-            )}
-
-            {/* Sub-tab: Smart Picks */}
-            {swingActiveTab === 'PICKS' && (
-              <div className="space-y-4">
-                <div className="flex items-center gap-2 mb-2">
-                  <input
-                    type="text"
-                    placeholder="Search smart picks..."
-                    value={picksSearch}
-                    onChange={(e) => setPicksSearch(e.target.value)}
-                    className="bg-slate-900 border border-slate-850 rounded px-2 py-1.5 focus:outline-none text-[11px] text-slate-200 focus:border-amber-500 w-full font-bold placeholder:text-slate-600"
-                  />
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {swingWatchlist
-                    .map(item => {
-                      const comps = getComponentsForSymbol(item.symbol);
-                      const ratingRes = compositeScore(comps.fund, comps.tech, comps.mom, comps.sent, comps.inst, item.price || 100, 100, swingWeights);
-                      return { item, comps, ratingRes };
-                    })
-                    .filter(res => res.ratingRes.total >= 65 && res.item.symbol.includes(picksSearch.toUpperCase()))
-                    .sort((a, b) => b.ratingRes.total - a.ratingRes.total)
-                    .map(({ item, comps, ratingRes }) => {
-                      const setup = calcTradeSetup(item.price || 100, {}, { atr: (item.price || 100) * 0.02 });
-                      return (
-                        <div key={item.id} className="border border-slate-850 bg-slate-900/10 p-4 rounded-xl space-y-3 hover:border-amber-500/25 transition-all">
-                          <div className="flex justify-between items-start">
-                            <div>
-                              <span className="text-slate-100 font-bold text-sm block">{item.symbol}</span>
-                              <span className="text-slate-500 text-[9px] font-bold uppercase">{item.name} | {item.sector}</span>
-                            </div>
-                            <span className={`px-2 py-0.5 rounded text-[9px] font-black ${
-                              ratingRes.total >= 80 ? 'bg-emerald-500/15 text-emerald-400' : 'bg-cyan-500/15 text-cyan-400'
-                            }`}>
-                              {ratingRes.rating.toUpperCase()} ({ratingRes.total})
-                            </span>
-                          </div>
-
-                          <div className="grid grid-cols-3 gap-2 bg-slate-950/40 p-2.5 border border-slate-850/50 rounded-lg text-[9px]">
-                            <div>
-                              <span className="text-slate-500 uppercase tracking-widest block mb-0.5">Stop Loss</span>
-                              <span className="text-rose-400 font-bold font-mono">₹{setup.stopLoss}</span>
-                            </div>
-                            <div>
-                              <span className="text-slate-500 uppercase tracking-widest block mb-0.5">Target 1</span>
-                              <span className="text-emerald-400 font-bold font-mono">₹{setup.target1}</span>
-                            </div>
-                            <div>
-                              <span className="text-slate-500 uppercase tracking-widest block mb-0.5">Risk/Reward</span>
-                              <span className="text-slate-300 font-bold font-mono">{setup.riskReward}:1</span>
-                            </div>
-                          </div>
-
-                          {userProfile?.role === 'admin' && (
-                            <button
-                              onClick={() => handleTriggerSignal(item, ratingRes)}
-                              className="w-full bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold py-1.5 rounded-lg text-[10px] active:scale-95 transition-all cursor-pointer font-bold"
-                            >
-                              ⚡ TRIGGER ALGO TRADE SIGNAL
-                            </button>
-                          )}
-                        </div>
-                      );
-                    })}
-                </div>
-              </div>
-            )}
-
-            {/* Sub-tab: Portfolio */}
-            {swingActiveTab === 'PORTFOLIO' && (
-              <div className="space-y-4">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse text-[10px]">
-                    <thead>
-                      <tr className="border-b border-slate-800 text-slate-500 uppercase tracking-widest text-[8px]">
-                        <th className="py-2 px-1">Symbol</th>
-                        <th className="py-2 px-1">Avg Price</th>
-                        <th className="py-2 px-1">Quantity</th>
-                        <th className="py-2 px-1">Invested Value</th>
-                        <th className="py-2 px-1">Current Price</th>
-                        <th className="py-2 px-1 text-right">P&L</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {swingHoldings.length === 0 ? (
-                        <tr>
-                          <td colSpan={6} className="text-center py-6 text-slate-500">
-                            No holdings in portfolio. Add your mock or live trade details.
-                          </td>
-                        </tr>
-                      ) : (
-                        swingHoldings.map((hold) => {
-                          const avg = Number(hold.average_buy_price);
-                          const qty = Number(hold.quantity);
-                          const current = livePrices[hold.symbol] || avg;
-                          const invested = avg * qty;
-                          const currentVal = current * qty;
-                          const pnlVal = currentVal - invested;
-                          return (
-                            <tr key={hold.id} className="border-b border-slate-850 hover:bg-slate-900/20">
-                              <td className="py-2.5 px-1 font-bold text-slate-200">{hold.symbol}</td>
-                              <td className="py-2.5 px-1 text-slate-350">₹{avg.toFixed(2)}</td>
-                              <td className="py-2.5 px-1 text-slate-350">{qty}</td>
-                              <td className="py-2.5 px-1 text-slate-350">₹{invested.toFixed(2)}</td>
-                              <td className="py-2.5 px-1 text-cyan-400 font-bold">₹{current.toFixed(2)}</td>
-                              <td className={`py-2.5 px-1 text-right font-black ${pnlVal >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                {pnlVal >= 0 ? '+' : ''}₹{pnlVal.toFixed(2)}
-                              </td>
-                            </tr>
-                          );
-                        })
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-
-                <form onSubmit={handleAddHolding} className="bg-slate-900/30 p-4 border border-slate-850 rounded-xl space-y-3">
-                  <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">RECORD / UPDATE CUSTOM HOLDING</h3>
-                  <div className="grid grid-cols-3 gap-3">
-                    <input
-                      type="text"
-                      placeholder="Symbol (e.g. RELIANCE.NS)"
-                      value={newHoldingSymbol}
-                      onChange={(e) => setNewHoldingSymbol(e.target.value)}
-                      className="bg-slate-950 border border-slate-800 rounded p-2 text-slate-200 focus:outline-none focus:border-amber-500 text-xs"
-                    />
-                    <input
-                      type="number"
-                      step="0.01"
-                      placeholder="Average Buy Price"
-                      value={newHoldingPrice}
-                      onChange={(e) => setNewHoldingPrice(e.target.value)}
-                      className="bg-slate-950 border border-slate-800 rounded p-2 text-slate-200 focus:outline-none focus:border-amber-500 text-xs"
-                    />
-                    <input
-                      type="number"
-                      placeholder="Quantity"
-                      value={newHoldingQty}
-                      onChange={(e) => setNewHoldingQty(e.target.value)}
-                      className="bg-slate-950 border border-slate-800 rounded p-2 text-slate-200 focus:outline-none focus:border-amber-500 text-xs"
-                    />
-                  </div>
-                  <button
-                    type="submit"
-                    className="bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold px-4 py-2 rounded-lg transition-all active:scale-95 cursor-pointer text-xs"
-                  >
-                    SYNC HOLDING
-                  </button>
-                </form>
-              </div>
-            )}
-
-            {/* Sub-tab: Screener */}
-            {swingActiveTab === 'SCREENER' && (
-              <div className="space-y-4">
-                <div className="grid grid-cols-3 gap-3 bg-slate-900/40 p-3.5 border border-slate-850 rounded-xl">
-                  <div>
-                    <label className="text-[9px] uppercase font-bold text-slate-500 tracking-wider block mb-1">Sector</label>
-                    <select
-                      value={screenSector}
-                      onChange={(e) => setScreenSector(e.target.value)}
-                      className="bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 focus:outline-none text-[11px] text-slate-400 focus:border-amber-500 w-full"
-                    >
-                      <option value="ALL">ALL SECTORS</option>
-                      <option value="Energy">Energy</option>
-                      <option value="Technology">Technology</option>
-                      <option value="Finance">Finance</option>
-                      <option value="Consumer">Consumer</option>
-                      <option value="Healthcare">Healthcare</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="text-[9px] uppercase font-bold text-slate-500 tracking-wider block mb-1">Market Cap</label>
-                    <select
-                      value={screenCap}
-                      onChange={(e) => setScreenCap(e.target.value)}
-                      className="bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 focus:outline-none text-[11px] text-slate-400 focus:border-amber-500 w-full"
-                    >
-                      <option value="ALL">ALL CAP CLASSIFICATIONS</option>
-                      <option value="LARGE CAP">LARGE CAP</option>
-                      <option value="MID CAP">MID CAP</option>
-                      <option value="SMALL CAP">SMALL CAP</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="text-[9px] uppercase font-bold text-slate-500 tracking-wider block mb-1">Algo Rating</label>
-                    <select
-                      value={screenRating}
-                      onChange={(e) => setScreenRating(e.target.value)}
-                      className="bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 focus:outline-none text-[11px] text-slate-400 focus:border-amber-500 w-full"
-                    >
-                      <option value="ALL">ALL RATINGS</option>
-                      <option value="STRONG-BUY">STRONG BUY</option>
-                      <option value="BUY">BUY</option>
-                      <option value="WATCH">WATCH</option>
-                      <option value="AVOID">AVOID</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse text-[10px]">
-                    <thead>
-                      <tr className="border-b border-slate-800 text-slate-500 uppercase tracking-widest text-[8px]">
-                        <th className="py-2 px-1">Symbol</th>
-                        <th className="py-2 px-1">Sector</th>
-                        <th className="py-2 px-1">Market Cap Class</th>
-                        <th className="py-2 px-1">Current Price</th>
-                        <th className="py-2 px-1 text-center">Score</th>
-                        <th className="py-2 px-1 text-right">Rating</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filteredScreener.length === 0 ? (
-                        <tr>
-                          <td colSpan={6} className="text-center py-6 text-slate-500">
-                            No assets match the current screening parameters.
-                          </td>
-                        </tr>
-                      ) : (
-                        filteredScreener.map((item) => {
-                          const comps = getComponentsForSymbol(item.symbol);
-                          const ratingRes = compositeScore(comps.fund, comps.tech, comps.mom, comps.sent, comps.inst, item.price || 100, 100, swingWeights);
-                          let cap = 'Large Cap';
-                          if (item.symbol.charCodeAt(0) % 3 === 1) cap = 'Mid Cap';
-                          else if (item.symbol.charCodeAt(0) % 3 === 2) cap = 'Small Cap';
-                          return (
-                            <tr key={item.id} className="border-b border-slate-850 hover:bg-slate-900/20">
-                              <td className="py-2.5 px-1 font-bold text-slate-200">{item.symbol}</td>
-                              <td className="py-2.5 px-1 text-slate-400">{item.sector}</td>
-                              <td className="py-2.5 px-1 text-slate-400">{cap}</td>
-                              <td className="py-2.5 px-1 text-slate-300">₹{item.price ? Number(item.price).toFixed(2) : '—'}</td>
-                              <td className="py-2.5 px-1 text-center font-bold text-cyan-400">{ratingRes.total}</td>
-                              <td className="py-2.5 px-1 text-right font-black">
-                                <span className={`text-[9px] ${
-                                  ratingRes.total >= 80 ? 'text-emerald-400' : ratingRes.total >= 65 ? 'text-cyan-400' : 'text-slate-500'
-                                }`}>
-                                  {ratingRes.rating.toUpperCase()}
-                                </span>
-                              </td>
-                            </tr>
-                          );
-                        })
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-
-            {/* Sub-tab: Backtester */}
-            {swingActiveTab === 'BACKTESTER' && (
-              <div className="space-y-4">
-                <div className="bg-slate-900/40 p-4 border border-slate-850 rounded-xl space-y-4 font-mono text-[11px]">
-                  <div className="border-b border-slate-800 pb-2 flex justify-between">
-                    <span className="font-bold text-slate-300">Run Strategy Simulation: {selectedSwingSymbol}</span>
-                    <span className="text-[10px] text-slate-500">Historical yfinance analysis</span>
-                  </div>
-
-                  <div className="grid grid-cols-3 gap-4">
-                    <div>
-                      <label className="text-[9px] uppercase font-bold text-slate-500 tracking-wider block mb-1">Score Entry Cutoff</label>
-                      <input
-                        type="number"
-                        min="50"
-                        max="95"
-                        value={btThreshold}
-                        onChange={(e) => setBtThreshold(parseInt(e.target.value))}
-                        className="bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 focus:outline-none text-[11px] text-slate-200 focus:border-amber-500 w-full"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[9px] uppercase font-bold text-slate-500 tracking-wider block mb-1">Holding Period (days)</label>
-                      <input
-                        type="number"
-                        min="5"
-                        max="90"
-                        value={btHoldingPeriod}
-                        onChange={(e) => setBtHoldingPeriod(parseInt(e.target.value))}
-                        className="bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 focus:outline-none text-[11px] text-slate-200 focus:border-amber-500 w-full"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[9px] uppercase font-bold text-slate-500 tracking-wider block mb-1">Lookback (days)</label>
-                      <input
-                        type="number"
-                        min="30"
-                        max="730"
-                        value={btLookback}
-                        onChange={(e) => setBtLookback(parseInt(e.target.value))}
-                        className="bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 focus:outline-none text-[11px] text-slate-200 focus:border-amber-500 w-full"
-                      />
-                    </div>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={runSwingBacktest}
-                    disabled={btLoading || !selectedSwingSymbol}
-                    className="w-full bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-slate-950 font-black py-2.5 rounded-lg active:scale-95 transition-all shadow-md cursor-pointer"
-                  >
-                    {btLoading ? 'COMPILING CANDLE DATA & RUNNING SIMULATION...' : 'RUN BACKTEST SIMULATION'}
-                  </button>
-                </div>
-
-                {btResults && (
-                  <div className="bg-slate-950/80 p-4 border border-slate-850 rounded-xl space-y-4 font-mono animate-fadeIn text-[11px]">
-                    <div className="border-b border-slate-850 pb-2 flex justify-between items-center">
-                      <span className="font-bold text-slate-200">Backtest Report: {btResults.symbol}</span>
-                      <span className="text-[9px] text-emerald-400 font-bold border border-emerald-500/20 bg-emerald-500/5 px-2 py-0.5 rounded">COMPLETED</span>
-                    </div>
-
-                    <div className="grid grid-cols-4 gap-3 text-center">
-                      <div className="bg-slate-900/40 p-2.5 border border-slate-850 rounded-lg">
-                        <span className="text-[8px] text-slate-500 block mb-1">WIN RATE</span>
-                        <span className="text-base font-black text-emerald-400">{btResults.winRate}%</span>
-                      </div>
-                      <div className="bg-slate-900/40 p-2.5 border border-slate-850 rounded-lg">
-                        <span className="text-[8px] text-slate-500 block mb-1">TOTAL SIGNALS</span>
-                        <span className="text-base font-black text-slate-200">{btResults.totalTrades}</span>
-                      </div>
-                      <div className="bg-slate-900/40 p-2.5 border border-slate-850 rounded-lg">
-                        <span className="text-[8px] text-slate-500 block mb-1">AVG RETURN</span>
-                        <span className="text-base font-black text-cyan-400">+{btResults.avgReturn}%</span>
-                      </div>
-                      <div className="bg-slate-900/40 p-2.5 border border-slate-850 rounded-lg">
-                        <span className="text-[8px] text-slate-500 block mb-1">ALPHA VS NIFTY</span>
-                        <span className={`text-base font-black ${btResults.alpha >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                          {btResults.alpha >= 0 ? '+' : ''}{btResults.alpha}%
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Historical Backtester Logs */}
-                    <div className="border-t border-slate-850 pt-3">
-                      <span className="text-[9px] uppercase font-bold text-slate-500 tracking-wider block mb-2">Simulated Signal Logs</span>
-                      <div className="overflow-y-auto max-h-40 overflow-x-auto text-[10px]">
-                        <table className="w-full text-left border-collapse">
-                          <thead>
-                            <tr className="border-b border-slate-800 text-slate-500 uppercase tracking-widest text-[8px]">
-                              <th className="py-1.5 px-1">Entry Date</th>
-                              <th className="py-1.5 px-1">Entry Price</th>
-                              <th className="py-1.5 px-1">Exit Date</th>
-                              <th className="py-1.5 px-1">Exit Price</th>
-                              <th className="py-1.5 px-1">Exit Reason</th>
-                              <th className="py-1.5 px-1 text-right">Return</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {btResults.trades.map((t: any, idx: number) => (
-                              <tr key={idx} className="border-b border-slate-850 hover:bg-slate-900/20">
-                                <td className="py-2 px-1 text-slate-350">{t.entryDate}</td>
-                                <td className="py-2 px-1 text-slate-300">₹{t.entryPrice.toFixed(2)}</td>
-                                <td className="py-2 px-1 text-slate-350">{t.exitDate}</td>
-                                <td className="py-2 px-1 text-slate-300">₹{t.exitPrice.toFixed(2)}</td>
-                                <td className="py-2 px-1 text-slate-400">{t.reason}</td>
-                                <td className={`py-2 px-1 text-right font-black ${t.returnPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                  {t.returnPct >= 0 ? '+' : ''}{t.returnPct.toFixed(2)}%
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Sub-tab: Performance Reports */}
-            {swingActiveTab === 'PERFORMANCE' && (
-              <div className="space-y-4">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse text-[10px]">
-                    <thead>
-                      <tr className="border-b border-slate-800 text-slate-500 uppercase tracking-widest text-[8px]">
-                        <th className="py-2 px-1">Asset Symbol</th>
-                        <th className="py-2 px-1">Win Rate</th>
-                        <th className="py-2 px-1">Avg return</th>
-                        <th className="py-2 px-1">Total Trades</th>
-                        <th className="py-2 px-1">Alpha</th>
-                        <th className="py-2 px-1">Benchmark</th>
-                        <th className="py-2 px-1">Run Date</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {swingPerformance.length === 0 ? (
-                        <tr>
-                          <td colSpan={7} className="text-center py-6 text-slate-500">
-                            No performance reports generated yet. Run a strategy simulation to generate a report.
-                          </td>
-                        </tr>
-                      ) : (
-                        swingPerformance.map((rep) => (
-                          <tr key={rep.id} className="border-b border-slate-850 hover:bg-slate-900/20">
-                            <td className="py-2.5 px-1 font-bold text-slate-200">{rep.symbol}</td>
-                            <td className="py-2.5 px-1 text-emerald-400 font-bold">{rep.win_rate}%</td>
-                            <td className="py-2.5 px-1 text-cyan-400">+{rep.avg_return}%</td>
-                            <td className="py-2.5 px-1 text-slate-350">{rep.total_trades}</td>
-                            <td className={`py-2.5 px-1 font-bold ${rep.alpha >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{rep.alpha >= 0 ? '+' : ''}{rep.alpha}%</td>
-                            <td className="py-2.5 px-1 text-slate-350">{rep.benchmark_return}%</td>
-                            <td className="py-2.5 px-1 text-slate-500">{new Date(rep.created_at).toLocaleDateString()}</td>
-                          </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-
-          </div>
-        </div>
-      </div>
-    );
+    } catch (err) {
+      console.error(err);
+    }
   };
 
   const runSwingBacktest = async () => {
@@ -4761,12 +4071,8 @@ export default function Dashboard() {
       )}
 
       {/* 3. Split Screen Brokerage Layout */}
-      {marketEnv === 'SWING' ? (
-        isTokenExpired ? (
-          <PremiumUpgradeBlocker feature="Swing Trading Dashboard" onRequestUpgrade={requestPremiumUpgrade} />
-        ) : (
-          <SwingTradingDashboard />
-        )
+      {isTokenExpired ? (
+        <PremiumUpgradeBlocker feature={marketEnv === 'SWING' ? "Swing Trading Dashboard" : "Trading Dashboard"} onRequestUpgrade={requestPremiumUpgrade} />
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         
@@ -5094,7 +4400,7 @@ export default function Dashboard() {
                             <th className="py-2 px-1 text-center">Win %</th>
                             <th className="py-2 px-1 text-right">Net P&L</th>
                           </tr>
-                        </thead>
+</thead>
                         <tbody>
                           {calculateDailyBreakdown(filteredTrades).map((day, idx) => (
                             <tr key={idx} className="border-b border-slate-850/50 hover:bg-slate-900/20">
@@ -5116,661 +4422,1400 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Live Open Positions Panel */}
-          <div className="border border-slate-800 bg-[#070b15]/95 rounded-2xl p-4 shadow-2xl">
-            <div className="flex items-center justify-between border-b border-slate-800/80 pb-3 mb-3">
-              <div className="flex items-center gap-2">
-                <span className="inline-block h-2 w-2 rounded-full bg-cyan-400 animate-pulse" />
-                <h2 className="text-xs font-bold font-mono tracking-widest text-slate-400 uppercase">LIVE OPEN POSITIONS</h2>
+          {marketEnv === 'SWING' ? (
+            <div className="border border-slate-800 bg-[#070b15]/95 rounded-2xl p-4 shadow-2xl">
+              {/* Tabs Selector */}
+              <div className="flex gap-4 border-b border-slate-850 pb-2 mb-4">
+                {['WATCHLIST', 'PICKS', 'PORTFOLIO', 'SCREENER', 'BACKTESTER', 'PERFORMANCE'].map((tab) => (
+                  <button
+                    key={tab}
+                    onClick={() => setSwingActiveTab(tab as any)}
+                    className={`font-bold tracking-widest text-[10px] pb-1 border-b-2 transition-colors cursor-pointer ${
+                      swingActiveTab === tab ? 'border-amber-500 text-amber-400 font-extrabold' : 'border-transparent text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    {tab}
+                  </button>
+                ))}
               </div>
-            </div>
 
-            {activeTrades.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-10 border border-dashed border-slate-850 rounded-xl bg-slate-900/10">
-                <div className="h-8 w-8 rounded-full border border-slate-700/60 flex items-center justify-center text-slate-500 mb-2">✓</div>
-                <p className="text-[11px] text-slate-500 font-mono tracking-wider">
-                  No active positions. Scanning for algorithmic setups.
-                </p>
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse font-mono text-[11px]">
-                  <thead>
-                    <tr className="border-b border-slate-800 text-slate-500 uppercase tracking-widest text-[9px]">
-                      <th className="py-2 px-2">Symbol</th>
-                      <th className="py-2 px-2">Direction</th>
-                      <th className="py-2 px-2">Quantity</th>
-                      <th className="py-2 px-2">Entry Price</th>
-                      <th className="py-2 px-2">Live Price</th>
-                      <th className="py-2 px-2 text-right">Float P&L</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {activeTrades.map((op) => {
-                      const entry = Number(op.entry_price);
-                      // Use alias-aware getLivePrice() — fixes BANK NIFTY showing $0 P&L
-                      const current = getLivePrice(op.symbol, isAssetMatch(selectedAsset, op.symbol) ? liveSpotPrice : entry);
-                      const isBuy = op.direction === 'BUY';
-                      const opUnrealized = isBuy ? (current - entry) * op.quantity : (entry - current) * op.quantity;
-                      
-                      // Find matched asset label if any
-                      const matchedAsset = (marketEnv === 'FOREX' ? FOREX_ASSETS : INDIAN_ASSETS).find(a => isAssetMatch(a.value, op.symbol));
-                      const label = matchedAsset ? matchedAsset.label : op.symbol;
-                      
-                      const isExpanded = expandedActiveTradeId === op.id;
-                      
-                      return (
-                        <>
-                          <tr 
-                            key={op.id}
-                            className={`border-b border-slate-850 hover:bg-slate-900/30 cursor-pointer transition-colors ${
-                              isAssetMatch(selectedAsset, op.symbol) ? 'bg-cyan-500/[0.02] border-l-2 border-l-cyan-500' : ''
-                            }`}
-                          >
-                            <td className="py-3 px-2 font-bold text-slate-200">
-                              <div className="flex items-center gap-1.5">
-                                <span onClick={() => {
-                                  setSelectedAsset(matchedAsset ? matchedAsset.value : op.symbol);
-                                  setSelectedAssetLabel(label);
-                                }}>
-                                  {label}
-                                </span>
-                                {op.is_user_adjusted && (
-                                  <span className="px-1 py-0.5 rounded text-[7px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">ADJUSTED</span>
-                                )}
-                                {(userProfile?.role === 'admin' || (tradeMode === 'MOCK' && mockAccountSource === 'MY') || (tradeMode === 'LIVE' && brokerSettings?.integrated)) && (
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      toggleActiveTradeExpand(op);
-                                    }}
-                                    className="text-[9px] font-bold text-cyan-400 hover:text-cyan-300 border border-cyan-500/20 bg-cyan-500/5 hover:bg-cyan-500/15 px-1 py-0.5 rounded cursor-pointer transition-colors"
-                                  >
-                                    {isExpanded ? 'CLOSE' : 'RISK'}
-                                  </button>
-                                )}
-                              </div>
-                            </td>
-                            <td className="py-3 px-2">
-                              <span className={`px-1.5 py-0.5 rounded font-bold text-[9px] ${isBuy ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'}`}>
-                                {op.direction}
-                              </span>
-                            </td>
-                            <td className="py-3 px-2 text-slate-300 font-bold">{formatActiveQty(op.quantity, op.symbol, marketEnv)}</td>
-                            <td className="py-3 px-2 text-slate-300">{formatPrice(entry, marketEnv)}</td>
-                            <td className="py-3 px-2 text-cyan-400 font-bold animate-pulse">{formatPrice(current, marketEnv)}</td>
-                            <td className={`py-3 px-2 text-right font-black ${opUnrealized >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                              {opUnrealized >= 0 ? '+' : ''}{formatCurrency(opUnrealized, marketEnv)}
+              {/* Sub-tab: Watchlist */}
+              {swingActiveTab === 'WATCHLIST' && (
+                <div className="space-y-4">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse text-[10px]">
+                      <thead>
+                        <tr className="border-b border-slate-800 text-slate-500 uppercase tracking-widest text-[8px]">
+                          <th className="py-2 px-1">Symbol</th>
+                          <th className="py-2 px-1">Name</th>
+                          <th className="py-2 px-1">Sector</th>
+                          <th className="py-2 px-1">Price</th>
+                          <th className="py-2 px-1">Target 1</th>
+                          <th className="py-2 px-1">Target 2</th>
+                          <th className="py-2 px-1">Stop Loss</th>
+                          <th className="py-2 px-1 text-center">Score</th>
+                          {userProfile?.role === 'admin' && <th className="py-2 px-1 text-right">Actions</th>}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {swingWatchlist.length === 0 ? (
+                          <tr>
+                            <td colSpan={9} className="text-center py-6 text-slate-500">
+                              No symbols found. Add symbols to scan.
                             </td>
                           </tr>
-                          {isExpanded && (
-                            <tr className="bg-slate-950/45 border-b border-slate-850">
-                              <td colSpan={6} className="p-3">
-                                <div className="flex flex-wrap gap-4 items-center justify-between font-mono text-[10px] text-slate-400">
-                                  <div className="flex flex-wrap gap-3 items-center">
-                                    <div>
-                                      <span className="block text-[8px] text-slate-500 uppercase tracking-widest mb-1">Stop Loss</span>
-                                      <input
-                                        type="number"
-                                        step="0.01"
-                                        value={adjustSl[op.id] || ''}
-                                        onChange={(e) => setAdjustSl(prev => ({ ...prev, [op.id]: e.target.value }))}
-                                        className="bg-slate-900 border border-slate-800 rounded px-2 py-1 text-slate-200 text-xs w-24 focus:outline-none focus:border-cyan-500"
-                                      />
-                                    </div>
-                                    <div>
-                                      <span className="block text-[8px] text-slate-500 uppercase tracking-widest mb-1">Take Profit</span>
-                                      <input
-                                        type="number"
-                                        step="0.01"
-                                        value={adjustTp[op.id] || ''}
-                                        onChange={(e) => setAdjustTp(prev => ({ ...prev, [op.id]: e.target.value }))}
-                                        className="bg-slate-900 border border-slate-800 rounded px-2 py-1 text-slate-200 text-xs w-24 focus:outline-none focus:border-cyan-500"
-                                      />
-                                    </div>
-                                    <div className="flex items-center gap-1.5 mt-4">
-                                      <input
-                                        type="checkbox"
-                                        id={`trailing-${op.id}`}
-                                        checked={!!adjustIsTrailing[op.id]}
-                                        onChange={(e) => setAdjustIsTrailing(prev => ({ ...prev, [op.id]: e.target.checked }))}
-                                        className="rounded bg-slate-900 border-slate-800 text-cyan-500 focus:ring-0 cursor-pointer"
-                                      />
-                                      <label htmlFor={`trailing-${op.id}`} className="text-slate-400 font-bold cursor-pointer">TRAILING</label>
-                                    </div>
-                                    {adjustIsTrailing[op.id] && (
+                        ) : (
+                          swingWatchlist.map((item) => {
+                            const comps = getComponentsForSymbol(item.symbol);
+                            const ratingRes = compositeScore(comps.fund, comps.tech, comps.mom, comps.sent, comps.inst, item.price || 100, 100, swingWeights);
+                            const isSelected = selectedSwingSymbol === item.symbol;
+                            return (
+                              <tr
+                                key={item.id}
+                                onClick={() => {
+                                  setSelectedSwingSymbol(item.symbol);
+                                  setSelectedSwingName(item.name || item.symbol);
+                                  setSelectedSwingSector(item.sector || 'Unknown');
+                                  setSelectedAsset(item.symbol);
+                                  setSelectedAssetLabel(item.name || item.symbol);
+                                }}
+                                className={`border-b border-slate-850 hover:bg-slate-900/30 cursor-pointer transition-colors ${
+                                  isSelected ? 'bg-amber-500/[0.02] border-l-2 border-l-amber-500' : ''
+                                }`}
+                              >
+                                <td className="py-2.5 px-1 font-bold text-slate-200">{item.symbol}</td>
+                                <td className="py-2.5 px-1 text-slate-400 truncate max-w-[100px]">{item.name}</td>
+                                <td className="py-2.5 px-1 text-slate-400">{item.sector}</td>
+                                <td className="py-2.5 px-1 text-slate-350">{item.price ? `₹${Number(item.price).toFixed(2)}` : '—'}</td>
+                                <td className="py-2.5 px-1 text-emerald-500">{item.target_1 ? `₹${Number(item.target_1).toFixed(2)}` : '—'}</td>
+                                <td className="py-2.5 px-1 text-emerald-400">{item.target_2 ? `₹${Number(item.target_2).toFixed(2)}` : '—'}</td>
+                                <td className="py-2.5 px-1 text-rose-400">{item.stop_loss ? `₹${Number(item.stop_loss).toFixed(2)}` : '—'}</td>
+                                <td className="py-2.5 px-1 text-center font-black">
+                                  <span className={`px-1 py-0.5 rounded ${
+                                    ratingRes.total >= 80 ? 'bg-emerald-500/10 text-emerald-400' : ratingRes.total >= 65 ? 'bg-cyan-500/10 text-cyan-400' : 'bg-slate-500/10 text-slate-400'
+                                  }`}>
+                                    {ratingRes.total}
+                                  </span>
+                                </td>
+                                {userProfile?.role === 'admin' && (
+                                  <td className="py-2.5 px-1 text-right">
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleRemoveWatchlist(item.symbol);
+                                      }}
+                                      className="text-[8px] bg-rose-500/15 text-rose-400 hover:bg-rose-500/25 px-1 py-0.5 rounded cursor-pointer"
+                                    >
+                                      REMOVE
+                                    </button>
+                                  </td>
+                                )}
+                              </tr>
+                            );
+                          })
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* Sub-tab: Smart Picks */}
+              {swingActiveTab === 'PICKS' && (
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <input
+                      type="text"
+                      placeholder="Search smart picks..."
+                      value={picksSearch}
+                      onChange={(e) => setPicksSearch(e.target.value)}
+                      className="bg-slate-900 border border-slate-850 rounded px-2 py-1.5 focus:outline-none text-[11px] text-slate-200 focus:border-amber-500 w-full font-bold placeholder:text-slate-600"
+                    />
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {swingWatchlist
+                      .map(item => {
+                        const comps = getComponentsForSymbol(item.symbol);
+                        const ratingRes = compositeScore(comps.fund, comps.tech, comps.mom, comps.sent, comps.inst, item.price || 100, 100, swingWeights);
+                        return { item, comps, ratingRes };
+                      })
+                      .filter(res => res.ratingRes.total >= 65 && res.item.symbol.includes(picksSearch.toUpperCase()))
+                      .sort((a, b) => b.ratingRes.total - a.ratingRes.total)
+                      .map(({ item, comps, ratingRes }) => {
+                        const setup = calcTradeSetup(item.price || 100, {}, { atr: (item.price || 100) * 0.02 });
+                        return (
+                          <div 
+                            key={item.id} 
+                            onClick={() => {
+                              setSelectedSwingSymbol(item.symbol);
+                              setSelectedSwingName(item.name || item.symbol);
+                              setSelectedSwingSector(item.sector || 'Unknown');
+                              setSelectedAsset(item.symbol);
+                              setSelectedAssetLabel(item.name || item.symbol);
+                            }}
+                            className={`border p-4 rounded-xl space-y-3 hover:border-amber-500/25 transition-all cursor-pointer ${
+                              selectedSwingSymbol === item.symbol ? 'border-amber-500 bg-amber-500/[0.01]' : 'border-slate-850 bg-slate-900/10'
+                            }`}
+                          >
+                            <div className="flex justify-between items-start">
+                              <div>
+                                <span className="text-slate-100 font-bold text-sm block">{item.symbol}</span>
+                                <span className="text-slate-500 text-[9px] font-bold uppercase">{item.name} | {item.sector}</span>
+                              </div>
+                              <span className={`px-2 py-0.5 rounded text-[9px] font-black ${
+                                ratingRes.total >= 80 ? 'bg-emerald-500/15 text-emerald-400' : 'bg-cyan-500/15 text-cyan-400'
+                              }`}>
+                                {ratingRes.rating.toUpperCase()} ({ratingRes.total})
+                              </span>
+                            </div>
+
+                            <div className="grid grid-cols-3 gap-2 bg-slate-950/40 p-2.5 border border-slate-850/50 rounded-lg text-[9px]">
+                              <div>
+                                <span className="text-slate-500 uppercase tracking-widest block mb-0.5">Stop Loss</span>
+                                <span className="text-rose-400 font-bold font-mono">₹{setup.stopLoss}</span>
+                              </div>
+                              <div>
+                                <span className="text-slate-500 uppercase tracking-widest block mb-0.5">Target 1</span>
+                                <span className="text-emerald-400 font-bold font-mono">₹{setup.target1}</span>
+                              </div>
+                              <div>
+                                <span className="text-slate-500 uppercase tracking-widest block mb-0.5">Risk/Reward</span>
+                                <span className="text-slate-300 font-bold font-mono">{setup.riskReward}:1</span>
+                              </div>
+                            </div>
+
+                            {userProfile?.role === 'admin' && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleTriggerSignal(item, ratingRes);
+                                }}
+                                className="w-full bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold py-1.5 rounded-lg text-[10px] active:scale-95 transition-all cursor-pointer font-bold"
+                              >
+                                ⚡ TRIGGER ALGO TRADE SIGNAL
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                  </div>
+                </div>
+              )}
+
+              {/* Sub-tab: Portfolio */}
+              {swingActiveTab === 'PORTFOLIO' && (
+                <div className="space-y-4">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse text-[10px]">
+                      <thead>
+                        <tr className="border-b border-slate-800 text-slate-500 uppercase tracking-widest text-[8px]">
+                          <th className="py-2 px-1">Symbol</th>
+                          <th className="py-2 px-1">Avg Price</th>
+                          <th className="py-2 px-1">Quantity</th>
+                          <th className="py-2 px-1">Invested Value</th>
+                          <th className="py-2 px-1">Current Price</th>
+                          <th className="py-2 px-1 text-right">P&L</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {swingHoldings.length === 0 ? (
+                          <tr>
+                            <td colSpan={6} className="text-center py-6 text-slate-500">
+                              No holdings in portfolio. Add your mock or live trade details.
+                            </td>
+                          </tr>
+                        ) : (
+                          swingHoldings.map((hold) => {
+                            const avg = Number(hold.average_buy_price);
+                            const qty = Number(hold.quantity);
+                            const current = livePrices[hold.symbol] || avg;
+                            const invested = avg * qty;
+                            const currentVal = current * qty;
+                            const pnlVal = currentVal - invested;
+                            return (
+                              <tr 
+                                key={hold.id} 
+                                onClick={() => {
+                                  setSelectedSwingSymbol(hold.symbol);
+                                  setSelectedSwingName(hold.symbol);
+                                  setSelectedSwingSector('Holding');
+                                  setSelectedAsset(hold.symbol);
+                                  setSelectedAssetLabel(hold.symbol);
+                                }}
+                                className={`border-b border-slate-850 hover:bg-slate-900/20 cursor-pointer transition-colors ${
+                                  selectedSwingSymbol === hold.symbol ? 'bg-amber-500/[0.02] border-l-2 border-l-amber-500' : ''
+                                }`}
+                              >
+                                <td className="py-2.5 px-1 font-bold text-slate-200">{hold.symbol}</td>
+                                <td className="py-2.5 px-1 text-slate-350">₹{avg.toFixed(2)}</td>
+                                <td className="py-2.5 px-1 text-slate-350">{qty}</td>
+                                <td className="py-2.5 px-1 text-slate-350">₹{invested.toFixed(2)}</td>
+                                <td className="py-2.5 px-1 text-cyan-400 font-bold">₹{current.toFixed(2)}</td>
+                                <td className={`py-2.5 px-1 text-right font-black ${pnlVal >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                  {pnlVal >= 0 ? '+' : ''}₹{pnlVal.toFixed(2)}
+                                </td>
+                              </tr>
+                            );
+                          })
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <form onSubmit={handleAddHolding} className="bg-slate-900/30 p-4 border border-slate-850 rounded-xl space-y-3">
+                    <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">RECORD / UPDATE CUSTOM HOLDING</h3>
+                    <div className="grid grid-cols-3 gap-3">
+                      <input
+                        type="text"
+                        placeholder="Symbol (e.g. RELIANCE.NS)"
+                        value={newHoldingSymbol}
+                        onChange={(e) => setNewHoldingSymbol(e.target.value)}
+                        className="bg-slate-950 border border-slate-800 rounded p-2 text-slate-200 focus:outline-none focus:border-amber-500 text-xs"
+                      />
+                      <input
+                        type="number"
+                        step="0.01"
+                        placeholder="Average Buy Price"
+                        value={newHoldingPrice}
+                        onChange={(e) => setNewHoldingPrice(e.target.value)}
+                        className="bg-slate-950 border border-slate-800 rounded p-2 text-slate-200 focus:outline-none focus:border-amber-500 text-xs"
+                      />
+                      <input
+                        type="number"
+                        placeholder="Quantity"
+                        value={newHoldingQty}
+                        onChange={(e) => setNewHoldingQty(e.target.value)}
+                        className="bg-slate-950 border border-slate-800 rounded p-2 text-slate-200 focus:outline-none focus:border-amber-500 text-xs"
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      className="bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold px-4 py-2 rounded-lg transition-all active:scale-95 cursor-pointer text-xs"
+                    >
+                      SYNC HOLDING
+                    </button>
+                  </form>
+                </div>
+              )}
+
+              {/* Sub-tab: Screener */}
+              {swingActiveTab === 'SCREENER' && (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-3 gap-3 bg-slate-900/40 p-3.5 border border-slate-855 rounded-xl">
+                    <div>
+                      <label className="text-[9px] uppercase font-bold text-slate-500 tracking-wider block mb-1">Sector</label>
+                      <select
+                        value={screenSector}
+                        onChange={(e) => setScreenSector(e.target.value)}
+                        className="bg-slate-955 border border-slate-800 rounded px-2.5 py-1.5 focus:outline-none text-[11px] text-slate-400 focus:border-amber-500 w-full"
+                      >
+                        <option value="ALL">ALL SECTORS</option>
+                        <option value="Energy">Energy</option>
+                        <option value="Technology">Technology</option>
+                        <option value="Finance">Finance</option>
+                        <option value="Consumer">Consumer</option>
+                        <option value="Healthcare">Healthcare</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[9px] uppercase font-bold text-slate-500 tracking-wider block mb-1">Market Cap</label>
+                      <select
+                        value={screenCap}
+                        onChange={(e) => setScreenCap(e.target.value)}
+                        className="bg-slate-955 border border-slate-800 rounded px-2.5 py-1.5 focus:outline-none text-[11px] text-slate-400 focus:border-amber-500 w-full"
+                      >
+                        <option value="ALL">ALL CAP CLASSIFICATIONS</option>
+                        <option value="LARGE CAP">LARGE CAP</option>
+                        <option value="MID CAP">MID CAP</option>
+                        <option value="SMALL CAP">SMALL CAP</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[9px] uppercase font-bold text-slate-500 tracking-wider block mb-1">Algo Rating</label>
+                      <select
+                        value={screenRating}
+                        onChange={(e) => setScreenRating(e.target.value)}
+                        className="bg-slate-955 border border-slate-800 rounded px-2.5 py-1.5 focus:outline-none text-[11px] text-slate-400 focus:border-amber-500 w-full"
+                      >
+                        <option value="ALL">ALL RATINGS</option>
+                        <option value="STRONG-BUY">STRONG BUY</option>
+                        <option value="BUY">BUY</option>
+                        <option value="WATCH">WATCH</option>
+                        <option value="AVOID">AVOID</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse text-[10px]">
+                      <thead>
+                        <tr className="border-b border-slate-800 text-slate-500 uppercase tracking-widest text-[8px]">
+                          <th className="py-2 px-1">Symbol</th>
+                          <th className="py-2 px-1">Sector</th>
+                          <th className="py-2 px-1">Market Cap Class</th>
+                          <th className="py-2 px-1">Current Price</th>
+                          <th className="py-2 px-1 text-center">Score</th>
+                          <th className="py-2 px-1 text-right">Rating</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredScreener.length === 0 ? (
+                          <tr>
+                            <td colSpan={6} className="text-center py-6 text-slate-500">
+                              No assets match the current screening parameters.
+                            </td>
+                          </tr>
+                        ) : (
+                          filteredScreener.map((item) => {
+                            const comps = getComponentsForSymbol(item.symbol);
+                            const ratingRes = compositeScore(comps.fund, comps.tech, comps.mom, comps.sent, comps.inst, item.price || 100, 100, swingWeights);
+                            let cap = 'Large Cap';
+                            if (item.symbol.charCodeAt(0) % 3 === 1) cap = 'Mid Cap';
+                            else if (item.symbol.charCodeAt(0) % 3 === 2) cap = 'Small Cap';
+                            return (
+                              <tr 
+                                key={item.id} 
+                                onClick={() => {
+                                  setSelectedSwingSymbol(item.symbol);
+                                  setSelectedSwingName(item.name || item.symbol);
+                                  setSelectedSwingSector(item.sector || 'Unknown');
+                                  setSelectedAsset(item.symbol);
+                                  setSelectedAssetLabel(item.name || item.symbol);
+                                }}
+                                className={`border-b border-slate-850 hover:bg-slate-900/20 cursor-pointer transition-colors ${
+                                  selectedSwingSymbol === item.symbol ? 'bg-amber-500/[0.02] border-l-2 border-l-amber-500' : ''
+                                }`}
+                              >
+                                <td className="py-2.5 px-1 font-bold text-slate-200">{item.symbol}</td>
+                                <td className="py-2.5 px-1 text-slate-400">{item.sector}</td>
+                                <td className="py-2.5 px-1 text-slate-400">{cap}</td>
+                                <td className="py-2.5 px-1 text-slate-350">₹{item.price ? Number(item.price).toFixed(2) : '—'}</td>
+                                <td className="py-2.5 px-1 text-center font-bold text-cyan-400">{ratingRes.total}</td>
+                                <td className="py-2.5 px-1 text-right font-black">
+                                  <span className={`text-[9px] ${
+                                    ratingRes.total >= 80 ? 'text-emerald-400' : ratingRes.total >= 65 ? 'text-cyan-400' : 'text-slate-500'
+                                  }`}>
+                                    {ratingRes.rating.toUpperCase()}
+                                  </span>
+                                </td>
+                              </tr>
+                            );
+                          })
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* Sub-tab: Backtester */}
+              {swingActiveTab === 'BACKTESTER' && (
+                <div className="space-y-4">
+                  <div className="bg-slate-900/40 p-4 border border-slate-850 rounded-xl space-y-4 font-mono text-[11px]">
+                    <div className="border-b border-slate-800 pb-2 flex justify-between">
+                      <span className="font-bold text-slate-300">Run Strategy Simulation: {selectedSwingSymbol}</span>
+                      <span className="text-[10px] text-slate-500">Historical yfinance analysis</span>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-4">
+                      <div>
+                        <label className="text-[9px] uppercase font-bold text-slate-500 tracking-wider block mb-1">Score Entry Cutoff</label>
+                        <input
+                          type="number"
+                          min="50"
+                          max="95"
+                          value={btThreshold}
+                          onChange={(e) => setBtThreshold(parseInt(e.target.value))}
+                          className="bg-slate-955 border border-slate-800 rounded px-2.5 py-1.5 focus:outline-none text-[11px] text-slate-200 focus:border-amber-500 w-full"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[9px] uppercase font-bold text-slate-500 tracking-wider block mb-1">Holding Period (days)</label>
+                        <input
+                          type="number"
+                          min="5"
+                          max="90"
+                          value={btHoldingPeriod}
+                          onChange={(e) => setBtHoldingPeriod(parseInt(e.target.value))}
+                          className="bg-slate-955 border border-slate-800 rounded px-2.5 py-1.5 focus:outline-none text-[11px] text-slate-200 focus:border-amber-500 w-full"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[9px] uppercase font-bold text-slate-500 tracking-wider block mb-1">Lookback (days)</label>
+                        <input
+                          type="number"
+                          min="30"
+                          max="730"
+                          value={btLookback}
+                          onChange={(e) => setBtLookback(parseInt(e.target.value))}
+                          className="bg-slate-955 border border-slate-800 rounded px-2.5 py-1.5 focus:outline-none text-[11px] text-slate-200 focus:border-amber-500 w-full"
+                        />
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={runSwingBacktest}
+                      disabled={btLoading || !selectedSwingSymbol}
+                      className="w-full bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-slate-950 font-black py-2.5 rounded-lg active:scale-95 transition-all shadow-md cursor-pointer"
+                    >
+                      {btLoading ? 'COMPILING CANDLE DATA & RUNNING SIMULATION...' : 'RUN BACKTEST SIMULATION'}
+                    </button>
+                  </div>
+
+                  {btResults && (
+                    <div className="bg-slate-950/80 p-4 border border-slate-850 rounded-xl space-y-4 font-mono animate-fadeIn text-[11px]">
+                      <div className="border-b border-slate-855 pb-2 flex justify-between items-center">
+                        <span className="font-bold text-slate-200">Backtest Report: {btResults.symbol}</span>
+                        <span className="text-[9px] text-emerald-400 font-bold border border-emerald-500/20 bg-emerald-500/5 px-2 py-0.5 rounded">COMPLETED</span>
+                      </div>
+
+                      <div className="grid grid-cols-4 gap-3 text-center">
+                        <div className="bg-slate-900/40 p-2.5 border border-slate-855 rounded-lg">
+                          <span className="text-[8px] text-slate-500 block mb-1">WIN RATE</span>
+                          <span className="text-base font-black text-emerald-400">{btResults.winRate}%</span>
+                        </div>
+                        <div className="bg-slate-900/40 p-2.5 border border-slate-855 rounded-lg">
+                          <span className="text-[8px] text-slate-500 block mb-1">TOTAL SIGNALS</span>
+                          <span className="text-base font-black text-slate-200">{btResults.totalTrades}</span>
+                        </div>
+                        <div className="bg-slate-900/40 p-2.5 border border-slate-855 rounded-lg">
+                          <span className="text-[8px] text-slate-500 block mb-1">AVG RETURN</span>
+                          <span className="text-base font-black text-cyan-400">+{btResults.avgReturn}%</span>
+                        </div>
+                        <div className="bg-slate-900/40 p-2.5 border border-slate-855 rounded-lg">
+                          <span className="text-[8px] text-slate-500 block mb-1">ALPHA VS NIFTY</span>
+                          <span className={`text-base font-black ${btResults.alpha >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                            {btResults.alpha >= 0 ? '+' : ''}{btResults.alpha}%
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Historical Backtester Logs */}
+                      <div className="border-t border-slate-850 pt-3">
+                        <span className="text-[9px] uppercase font-bold text-slate-500 tracking-wider block mb-2">Simulated Signal Logs</span>
+                        <div className="overflow-y-auto max-h-40 overflow-x-auto text-[10px]">
+                          <table className="w-full text-left border-collapse">
+                            <thead>
+                              <tr className="border-b border-slate-800 text-slate-500 uppercase tracking-widest text-[8px]">
+                                <th className="py-1.5 px-1">Entry Date</th>
+                                <th className="py-1.5 px-1">Entry Price</th>
+                                <th className="py-1.5 px-1">Exit Date</th>
+                                <th className="py-1.5 px-1">Exit Price</th>
+                                <th className="py-1.5 px-1">Exit Reason</th>
+                                <th className="py-1.5 px-1 text-right">Return</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {btResults.trades.map((t: any, idx: number) => (
+                                <tr key={idx} className="border-b border-slate-850 hover:bg-slate-900/20">
+                                  <td className="py-2 px-1 text-slate-350">{t.entryDate}</td>
+                                  <td className="py-2 px-1 text-slate-300">₹{t.entryPrice.toFixed(2)}</td>
+                                  <td className="py-2 px-1 text-slate-350">{t.exitDate}</td>
+                                  <td className="py-2 px-1 text-slate-300">₹{t.exitPrice.toFixed(2)}</td>
+                                  <td className="py-2 px-1 text-slate-400">{t.reason}</td>
+                                  <td className={`py-2 px-1 text-right font-black ${t.returnPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                    {t.returnPct >= 0 ? '+' : ''}{t.returnPct.toFixed(2)}%
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Sub-tab: Performance Reports */}
+              {swingActiveTab === 'PERFORMANCE' && (
+                <div className="space-y-4">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse text-[10px]">
+                      <thead>
+                        <tr className="border-b border-slate-800 text-slate-500 uppercase tracking-widest text-[8px]">
+                          <th className="py-2 px-1">Asset Symbol</th>
+                          <th className="py-2 px-1">Win Rate</th>
+                          <th className="py-2 px-1">Avg return</th>
+                          <th className="py-2 px-1">Total Trades</th>
+                          <th className="py-2 px-1">Alpha</th>
+                          <th className="py-2 px-1">Benchmark</th>
+                          <th className="py-2 px-1">Run Date</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {swingPerformance.length === 0 ? (
+                          <tr>
+                            <td colSpan={7} className="text-center py-6 text-slate-500">
+                              No performance reports generated yet. Run a strategy simulation to generate a report.
+                            </td>
+                          </tr>
+                        ) : (
+                          swingPerformance.map((rep) => (
+                            <tr key={rep.id} className="border-b border-slate-850 hover:bg-slate-900/20">
+                              <td className="py-2.5 px-1 font-bold text-slate-200">{rep.symbol}</td>
+                              <td className="py-2.5 px-1 text-emerald-400 font-bold">{rep.win_rate}%</td>
+                              <td className="py-2.5 px-1 text-cyan-400">+{rep.avg_return}%</td>
+                              <td className="py-2.5 px-1 text-slate-350">{rep.total_trades}</td>
+                              <td className={`py-2.5 px-1 font-bold ${rep.alpha >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{rep.alpha >= 0 ? '+' : ''}{rep.alpha}%</td>
+                              <td className="py-2.5 px-1 text-slate-350">{rep.benchmark_return}%</td>
+                              <td className="py-2.5 px-1 text-slate-500">{new Date(rep.created_at).toLocaleDateString()}</td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="border border-slate-800 bg-[#070b15]/95 rounded-2xl p-4 shadow-2xl">
+              <div className="flex items-center justify-between border-b border-slate-800/80 pb-3 mb-3">
+                <div className="flex items-center gap-2">
+                  <span className="inline-block h-2 w-2 rounded-full bg-cyan-400 animate-pulse" />
+                  <h2 className="text-xs font-bold font-mono tracking-widest text-slate-400 uppercase">LIVE OPEN POSITIONS</h2>
+                </div>
+              </div>
+
+              {activeTrades.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-10 border border-dashed border-slate-850 rounded-xl bg-slate-900/10">
+                  <div className="h-8 w-8 rounded-full border border-slate-700/60 flex items-center justify-center text-slate-500 mb-2">✓</div>
+                  <p className="text-[11px] text-slate-500 font-mono tracking-wider">
+                    No active positions. Scanning for algorithmic setups.
+                  </p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse font-mono text-[11px]">
+                    <thead>
+                      <tr className="border-b border-slate-800 text-slate-500 uppercase tracking-widest text-[9px]">
+                        <th className="py-2 px-2">Symbol</th>
+                        <th className="py-2 px-2">Direction</th>
+                        <th className="py-2 px-2">Quantity</th>
+                        <th className="py-2 px-2">Entry Price</th>
+                        <th className="py-2 px-2">Live Price</th>
+                        <th className="py-2 px-2 text-right">Float P&L</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {activeTrades.map((op) => {
+                        const entry = Number(op.entry_price);
+                        const current = livePrices[op.symbol] || entry;
+                        const isBuy = op.direction === 'BUY';
+                        const unrealized = isBuy ? (current - entry) * op.quantity : (entry - current) * op.quantity;
+                        const isExpanded = expandedActiveTradeId === op.id;
+                        
+                        return (
+                          <>
+                            <tr 
+                              key={op.id} 
+                              onClick={() => setExpandedActiveTradeId(isExpanded ? null : op.id)}
+                              className={`border-b border-slate-850 hover:bg-slate-900/40 cursor-pointer transition-all duration-200 ${isExpanded ? 'bg-cyan-500/[0.01]' : ''}`}
+                            >
+                              <td className="py-3.5 px-2 font-bold text-slate-200 flex items-center gap-1.5">
+                                <span className={`h-1.5 w-1.5 rounded-full ${isBuy ? 'bg-emerald-400' : 'bg-rose-400'}`} />
+                                {op.symbol}
+                              </td>
+                              <td className="py-3.5 px-2">
+                                <span className={`px-1.5 py-0.5 rounded text-[9px] font-extrabold ${isBuy ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'}`}>
+                                  {op.direction}
+                                </span>
+                              </td>
+                              <td className="py-3.5 px-2 text-slate-350 font-semibold">{formatActiveQty(op.quantity, op.symbol, marketEnv)}</td>
+                              <td className="py-3.5 px-2 text-slate-350 font-bold">{formatPrice(entry, marketEnv)}</td>
+                              <td className="py-3.5 px-2 text-cyan-400 font-extrabold animate-pulse">{formatPrice(current, marketEnv)}</td>
+                              <td className={`py-3.5 px-2 text-right font-black text-xs ${unrealized >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                {unrealized >= 0 ? '+' : ''}{formatCurrency(unrealized, marketEnv)}
+                              </td>
+                            </tr>
+                            
+                            {isExpanded && (
+                              <tr className="bg-slate-950/40 border-b border-slate-850">
+                                <td colSpan={6} className="p-4">
+                                  <div className="flex flex-col gap-4 font-mono text-[10px] text-slate-400 animate-fadeIn">
+                                    <div className="flex flex-wrap gap-3 items-center">
                                       <div>
-                                        <span className="block text-[8px] text-slate-500 uppercase tracking-widest mb-1">Offset</span>
+                                        <span className="block text-[8px] text-slate-500 uppercase tracking-widest mb-1">Stop Loss</span>
                                         <input
                                           type="number"
                                           step="0.01"
-                                          value={adjustOffset[op.id] || ''}
-                                          onChange={(e) => setAdjustOffset(prev => ({ ...prev, [op.id]: e.target.value }))}
-                                          className="bg-slate-900 border border-slate-800 rounded px-2 py-1 text-slate-200 text-xs w-16 focus:outline-none focus:border-cyan-500"
+                                          value={adjustSl[op.id] || ''}
+                                          onChange={(e) => setAdjustSl(prev => ({ ...prev, [op.id]: e.target.value }))}
+                                          className="bg-slate-900 border border-slate-800 rounded px-2 py-1 text-slate-200 text-xs w-24 focus:outline-none focus:border-cyan-500"
                                         />
                                       </div>
-                                    )}
+                                      <div>
+                                        <span className="block text-[8px] text-slate-500 uppercase tracking-widest mb-1">Take Profit</span>
+                                        <input
+                                          type="number"
+                                          step="0.01"
+                                          value={adjustTp[op.id] || ''}
+                                          onChange={(e) => setAdjustTp(prev => ({ ...prev, [op.id]: e.target.value }))}
+                                          className="bg-slate-900 border border-slate-800 rounded px-2 py-1 text-slate-200 text-xs w-24 focus:outline-none focus:border-cyan-500"
+                                        />
+                                      </div>
+                                      <div className="flex items-center gap-1.5 mt-4">
+                                        <input
+                                          type="checkbox"
+                                          id={`trailing-${op.id}`}
+                                          checked={!!adjustIsTrailing[op.id]}
+                                          onChange={(e) => setAdjustIsTrailing(prev => ({ ...prev, [op.id]: e.target.checked }))}
+                                          className="rounded bg-slate-900 border-slate-800 text-cyan-500 focus:ring-0 cursor-pointer"
+                                        />
+                                        <label htmlFor={`trailing-${op.id}`} className="text-slate-400 font-bold cursor-pointer">TRAILING</label>
+                                      </div>
+                                      {adjustIsTrailing[op.id] && (
+                                        <div>
+                                          <span className="block text-[8px] text-slate-500 uppercase tracking-widest mb-1">Offset</span>
+                                          <input
+                                            type="number"
+                                            step="0.01"
+                                            value={adjustOffset[op.id] || ''}
+                                            onChange={(e) => setAdjustOffset(prev => ({ ...prev, [op.id]: e.target.value }))}
+                                            className="bg-slate-900 border border-slate-800 rounded px-2 py-1 text-slate-200 text-xs w-16 focus:outline-none focus:border-cyan-500"
+                                          />
+                                        </div>
+                                      )}
+                                    </div>
+                                    <button
+                                      onClick={() => handleAdjustSubmit(op.id, marketEnv)}
+                                      disabled={adjustLoading[op.id]}
+                                      className="bg-cyan-500 hover:bg-cyan-600 text-slate-950 font-bold px-3 py-1.5 rounded-lg text-[10px] transition-all shadow active:scale-95 disabled:opacity-50 cursor-pointer"
+                                    >
+                                      {adjustLoading[op.id] ? 'SAVING...' : 'SAVE RISK'}
+                                    </button>
                                   </div>
-                                  <button
-                                    onClick={() => handleAdjustSubmit(op.id, marketEnv)}
-                                    disabled={adjustLoading[op.id]}
-                                    className="bg-cyan-500 hover:bg-cyan-600 text-slate-950 font-bold px-3 py-1.5 rounded-lg text-[10px] transition-all shadow active:scale-95 disabled:opacity-50 cursor-pointer"
-                                  >
-                                    {adjustLoading[op.id] ? 'SAVING...' : 'SAVE RISK'}
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                          )}
-                        </>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
+                                </td>
+                              </tr>
+                            )}
+                          </>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
           </div>
         </div>
 
         {/* RIGHT COLUMN: Interactive Ledger (1/3 width) */}
         <div className="flex flex-col gap-4 w-full">
 
-          {/* CUSTOM STOCK SCANNER */}
-          <div className="border border-slate-800 bg-[#070b15]/95 rounded-2xl p-4 shadow-2xl h-fit">
-            <div className="flex items-center justify-between border-b border-slate-800/80 pb-3 mb-4">
-              <div className="flex items-center gap-2">
-                <span className="inline-block h-3 w-3 rounded-full bg-cyan-500" />
-                <h2 className="text-xs font-bold font-mono tracking-widest text-slate-400 uppercase">FAST STOCK SCANNER</h2>
-              </div>
-              <span className="text-[10px] text-slate-500 font-mono">SMC Engine</span>
-            </div>
+          {marketEnv === 'SWING' ? (
+            <>
+              {/* COMPOSITE SCORING WEIGHTS */}
+              <div className="border border-slate-800 bg-[#070b15]/95 rounded-2xl p-5 shadow-2xl flex flex-col gap-5">
+                <div className="border-b border-slate-850 pb-3 flex justify-between items-center">
+                  <h2 className="text-xs font-black tracking-widest text-slate-400 uppercase font-mono">COMPOSITE SCORING WEIGHTS</h2>
+                  <div className="px-2 py-0.5 rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/25 text-[10px] font-black animate-pulse">
+                    SUM: 100%
+                  </div>
+                </div>
 
-            {isTokenExpired ? (
-              <InlinePremiumUpgradeBlocker feature="Custom Stock Scanner" onRequestUpgrade={requestPremiumUpgrade} />
-            ) : (
-              <>
-                <form onSubmit={runCustomScan} className="flex items-center gap-2 mb-4 font-mono">
-                  <div className="flex-1 relative flex items-center">
+                <div className="space-y-4 text-xs font-mono">
+                  <div>
+                    <div className="flex justify-between font-bold mb-1">
+                      <span className="text-slate-400">Fundamental Weight</span>
+                      <span className="text-cyan-400">{swingWeights.fundamental}%</span>
+                    </div>
                     <input
-                      type="text"
-                      placeholder="e.g. SBIN.NS, TCS.NS, GC=F"
-                      value={customScanTicker}
-                      onChange={(e) => setCustomScanTicker(e.target.value)}
-                      className="w-full bg-slate-900 border border-slate-800 rounded-xl pl-3 pr-14 py-2 text-xs font-bold text-slate-200 focus:outline-none focus:border-cyan-500 placeholder:text-slate-600 transition-colors"
+                      type="range"
+                      min="0"
+                      max="100"
+                      value={swingWeights.fundamental}
+                      onChange={(e) => handleWeightChange('fundamental', parseInt(e.target.value))}
+                      className="w-full h-1 bg-slate-900 rounded-lg appearance-none cursor-pointer accent-cyan-500"
                     />
-                    {customScanTicker && (
+                  </div>
+
+                  <div>
+                    <div className="flex justify-between font-bold mb-1">
+                      <span className="text-slate-400">Technical Weight</span>
+                      <span className="text-cyan-400">{swingWeights.technical}%</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      value={swingWeights.technical}
+                      onChange={(e) => handleWeightChange('technical', parseInt(e.target.value))}
+                      className="w-full h-1 bg-slate-900 rounded-lg appearance-none cursor-pointer accent-cyan-500"
+                    />
+                  </div>
+
+                  <div>
+                    <div className="flex justify-between font-bold mb-1">
+                      <span className="text-slate-400">Momentum Weight</span>
+                      <span className="text-cyan-400">{swingWeights.momentum}%</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      value={swingWeights.momentum}
+                      onChange={(e) => handleWeightChange('momentum', parseInt(e.target.value))}
+                      className="w-full h-1 bg-slate-900 rounded-lg appearance-none cursor-pointer accent-cyan-500"
+                    />
+                  </div>
+
+                  <div>
+                    <div className="flex justify-between font-bold mb-1">
+                      <span className="text-slate-400">Sentiment Weight</span>
+                      <span className="text-cyan-400">{swingWeights.sentiment}%</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      value={swingWeights.sentiment}
+                      onChange={(e) => handleWeightChange('sentiment', parseInt(e.target.value))}
+                      className="w-full h-1 bg-slate-900 rounded-lg appearance-none cursor-pointer accent-cyan-500"
+                    />
+                  </div>
+
+                  <div>
+                    <div className="flex justify-between font-bold mb-1">
+                      <span className="text-slate-400">Institutional Weight</span>
+                      <span className="text-cyan-400">{swingWeights.institutional}%</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      value={swingWeights.institutional}
+                      onChange={(e) => handleWeightChange('institutional', parseInt(e.target.value))}
+                      className="w-full h-1 bg-slate-900 rounded-lg appearance-none cursor-pointer accent-cyan-500"
+                    />
+                  </div>
+                </div>
+
+                <div className="bg-slate-900/30 border border-slate-850 rounded-xl p-3 text-[10px] text-slate-500 leading-relaxed">
+                  💡 Changing weights dynamically recalculates composite scores and buy recommendations for all watchlist symbols instantly.
+                </div>
+              </div>
+
+              {/* ADMIN WATCHLIST ADD FORM */}
+              {userProfile?.role === 'admin' && (
+                <div className="border border-slate-800 bg-[#070b15]/95 rounded-2xl p-5 shadow-2xl flex flex-col gap-4">
+                  <div className="border-b border-slate-850 pb-3">
+                    <h2 className="text-xs font-black tracking-widest text-slate-400 uppercase font-mono">ADD WATCHLIST ASSET TARGETS</h2>
+                  </div>
+                  <form onSubmit={handleAddWatchlist} className="space-y-3 font-mono">
+                    <div className="flex flex-col gap-2">
+                      <label className="text-[9px] text-slate-500 uppercase tracking-widest">Symbol</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. INFY.NS"
+                        value={wlSymbol}
+                        onChange={(e) => setWlSymbol(e.target.value)}
+                        className="bg-slate-950 border border-slate-800 rounded p-2.5 text-slate-200 focus:outline-none focus:border-amber-500 text-xs w-full"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <label className="text-[9px] text-slate-500 uppercase tracking-widest">Company Name</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Infosys Limited"
+                        value={wlName}
+                        onChange={(e) => setWlName(e.target.value)}
+                        className="bg-slate-950 border border-slate-800 rounded p-2.5 text-slate-200 focus:outline-none focus:border-amber-500 text-xs w-full"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <label className="text-[9px] text-slate-500 uppercase tracking-widest">Sector</label>
+                      <select
+                        value={wlSector}
+                        onChange={(e) => setWlSector(e.target.value)}
+                        className="bg-slate-950 border border-slate-800 rounded p-2.5 text-slate-400 focus:outline-none focus:border-amber-500 text-xs w-full cursor-pointer"
+                      >
+                        <option value="Energy">Energy</option>
+                        <option value="Technology">Technology</option>
+                        <option value="Finance">Finance</option>
+                        <option value="Consumer">Consumer</option>
+                        <option value="Healthcare">Healthcare</option>
+                        <option value="Automobile">Automobile</option>
+                      </select>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[9px] text-slate-500 uppercase tracking-widest">Price</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          placeholder="Price"
+                          value={wlPrice}
+                          onChange={(e) => setWlPrice(e.target.value)}
+                          className="bg-slate-950 border border-slate-800 rounded p-2.5 text-slate-200 focus:outline-none focus:border-amber-500 text-xs w-full"
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[9px] text-slate-500 uppercase tracking-widest">Stop Loss</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          placeholder="Stop Loss"
+                          value={wlStopLoss}
+                          onChange={(e) => setWlStopLoss(e.target.value)}
+                          className="bg-slate-950 border border-slate-800 rounded p-2.5 text-slate-200 focus:outline-none focus:border-amber-500 text-xs w-full"
+                        />
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[9px] text-slate-500 uppercase tracking-widest">Target 1</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          placeholder="Target 1"
+                          value={wlTarget1}
+                          onChange={(e) => setWlTarget1(e.target.value)}
+                          className="bg-slate-950 border border-slate-800 rounded p-2.5 text-slate-200 focus:outline-none focus:border-amber-500 text-xs w-full"
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[9px] text-slate-500 uppercase tracking-widest">Target 2</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          placeholder="Target 2"
+                          value={wlTarget2}
+                          onChange={(e) => setWlTarget2(e.target.value)}
+                          className="bg-slate-950 border border-slate-800 rounded p-2.5 text-slate-200 focus:outline-none focus:border-amber-500 text-xs w-full"
+                        />
+                      </div>
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={wlSaving}
+                      className="w-full mt-2 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-slate-950 font-black py-2.5 rounded-xl active:scale-95 transition-all shadow-md cursor-pointer text-xs font-bold font-mono"
+                    >
+                      {wlSaving ? 'SYNCING TARGETS...' : 'SYNC WATCHLIST TARGETS'}
+                    </button>
+                  </form>
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+            {/* CUSTOM STOCK SCANNER */}
+            <div className="border border-slate-800 bg-[#070b15]/95 rounded-2xl p-4 shadow-2xl h-fit">
+              <div className="flex items-center justify-between border-b border-slate-800/80 pb-3 mb-4">
+                <div className="flex items-center gap-2">
+                  <span className="inline-block h-3 w-3 rounded-full bg-cyan-500" />
+                  <h2 className="text-xs font-bold font-mono tracking-widest text-slate-400 uppercase">FAST STOCK SCANNER</h2>
+                </div>
+                <span className="text-[10px] text-slate-500 font-mono">SMC Engine</span>
+              </div>
+  
+              {isTokenExpired ? (
+                <InlinePremiumUpgradeBlocker feature="Custom Stock Scanner" onRequestUpgrade={requestPremiumUpgrade} />
+              ) : (
+                <>
+                  <form onSubmit={runCustomScan} className="flex items-center gap-2 mb-4 font-mono">
+                    <div className="flex-1 relative flex items-center">
+                      <input
+                        type="text"
+                        placeholder="e.g. SBIN.NS, TCS.NS, GC=F"
+                        value={customScanTicker}
+                        onChange={(e) => setCustomScanTicker(e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-800 rounded-xl pl-3 pr-14 py-2 text-xs font-bold text-slate-200 focus:outline-none focus:border-cyan-500 placeholder:text-slate-600 transition-colors"
+                      />
+                      {customScanTicker && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCustomScanTicker('');
+                            setCustomScanResult(null);
+                          }}
+                          className="absolute right-2 text-slate-500 hover:text-slate-300 font-bold text-[9px] uppercase tracking-wider bg-slate-950/40 hover:bg-slate-900 px-1.5 py-0.5 rounded cursor-pointer border-0"
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={customScanLoading}
+                      className="bg-cyan-500 hover:bg-cyan-600 text-slate-950 font-bold px-4 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-lg hover:shadow-cyan-500/20 active:scale-95 disabled:opacity-50 cursor-pointer"
+                    >
+                      {customScanLoading ? (
+                        <div className="h-3.5 w-3.5 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
+                      ) : 'SCAN'}
+                    </button>
+                  </form>
+  
+                  {customScanResult && (
+                    <div className="bg-slate-900/60 p-3 rounded-xl border border-slate-850 font-mono text-[11px] animate-fadeIn relative">
                       <button
                         type="button"
-                        onClick={() => {
-                          setCustomScanTicker('');
-                          setCustomScanResult(null);
-                        }}
-                        className="absolute right-2 text-slate-500 hover:text-slate-300 font-bold text-[9px] uppercase tracking-wider bg-slate-950/40 hover:bg-slate-900 px-1.5 py-0.5 rounded cursor-pointer border-0"
+                        onClick={() => setCustomScanResult(null)}
+                        className="absolute top-2 right-2 text-slate-500 hover:text-rose-450 transition-colors font-bold text-[8px] tracking-wider uppercase bg-slate-950/40 hover:bg-rose-500/10 px-1.5 py-0.5 rounded cursor-pointer"
                       >
                         Clear
                       </button>
-                    )}
-                  </div>
-                  <button
-                    type="submit"
-                    disabled={customScanLoading}
-                    className="bg-cyan-500 hover:bg-cyan-600 text-slate-950 font-bold px-4 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-lg hover:shadow-cyan-500/20 active:scale-95 disabled:opacity-50 cursor-pointer"
-                  >
-                    {customScanLoading ? (
-                      <div className="h-3.5 w-3.5 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
-                    ) : 'SCAN'}
-                  </button>
-                </form>
-
-                {customScanResult && (
-                  <div className="bg-slate-900/60 p-3 rounded-xl border border-slate-850 font-mono text-[11px] animate-fadeIn relative">
-                    <button
-                      type="button"
-                      onClick={() => setCustomScanResult(null)}
-                      className="absolute top-2 right-2 text-slate-500 hover:text-rose-450 transition-colors font-bold text-[8px] tracking-wider uppercase bg-slate-950/40 hover:bg-rose-500/10 px-1.5 py-0.5 rounded cursor-pointer"
-                    >
-                      Clear
-                    </button>
-                    {customScanResult.status === 'success' ? (
-                      <div className="space-y-2">
-                        <div className="flex justify-between items-center pb-1 border-b border-slate-800/50">
-                          <span className="font-bold text-slate-200">{customScanResult.ticker}</span>
-                          <span className="text-[10px] text-slate-500">{customScanResult.timestamp}</span>
+                      {customScanResult.status === 'success' ? (
+                        <div className="space-y-2">
+                          <div className="flex justify-between items-center pb-1 border-b border-slate-800/50">
+                            <span className="font-bold text-slate-200">{customScanResult.ticker}</span>
+                            <span className="text-[10px] text-slate-500">{customScanResult.timestamp}</span>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2 text-[10px]">
+                            <div>
+                              <span className="text-slate-500 uppercase tracking-wider block">Price</span>
+                              <span className="text-slate-200 font-bold">₹{customScanResult.current_price.toFixed(2)}</span>
+                            </div>
+                            <div>
+                              <span className="text-slate-500 uppercase tracking-wider block">Trend</span>
+                              <span className={`font-bold ${customScanResult.trend === 'BULLISH' ? 'text-emerald-400' : 'text-rose-400'}`}>{customScanResult.trend}</span>
+                            </div>
+                            <div>
+                              <span className="text-slate-500 uppercase tracking-wider block">Structure</span>
+                              <span className="text-slate-300 font-semibold">{customScanResult.structure}</span>
+                            </div>
+                            <div>
+                              <span className="text-slate-500 uppercase tracking-wider block">SMC Signal</span>
+                              <span className={`font-black ${customScanResult.signal === 'BUY' ? 'text-emerald-400' : (customScanResult.signal === 'SELL' ? 'text-rose-400' : 'text-slate-400')}`}>
+                                {customScanResult.signal}
+                              </span>
+                            </div>
+                          </div>
+                          {customScanResult.bullish_fvg !== 'None' && (
+                            <div className="bg-emerald-950/20 p-2 rounded border border-emerald-900/30 text-[10px]">
+                              <span className="text-emerald-400/80 font-bold block mb-0.5">Bullish FVG Zone</span>
+                              <span className="text-emerald-300 font-bold">{customScanResult.bullish_fvg}</span>
+                            </div>
+                          )}
+                          {customScanResult.bearish_fvg !== 'None' && (
+                            <div className="bg-rose-950/20 p-2 rounded border border-rose-900/30 text-[10px]">
+                              <span className="text-rose-400/80 font-bold block mb-0.5">Bearish FVG Zone</span>
+                              <span className="text-rose-300 font-bold">{customScanResult.bearish_fvg}</span>
+                            </div>
+                          )}
+                          <p className="text-[10px] text-slate-400 border-t border-slate-800/40 pt-2 leading-relaxed">
+                            {customScanResult.explanation}
+                          </p>
                         </div>
-                        <div className="grid grid-cols-2 gap-2 text-[10px]">
-                          <div>
-                            <span className="text-slate-500 uppercase tracking-wider block">Price</span>
-                            <span className="text-slate-200 font-bold">₹{customScanResult.current_price.toFixed(2)}</span>
-                          </div>
-                          <div>
-                            <span className="text-slate-500 uppercase tracking-wider block">Trend</span>
-                            <span className={`font-bold ${customScanResult.trend === 'BULLISH' ? 'text-emerald-400' : 'text-rose-400'}`}>{customScanResult.trend}</span>
-                          </div>
-                          <div>
-                            <span className="text-slate-500 uppercase tracking-wider block">Structure</span>
-                            <span className="text-slate-300 font-semibold">{customScanResult.structure}</span>
-                          </div>
-                          <div>
-                            <span className="text-slate-500 uppercase tracking-wider block">SMC Signal</span>
-                            <span className={`font-black ${customScanResult.signal === 'BUY' ? 'text-emerald-400' : (customScanResult.signal === 'SELL' ? 'text-rose-400' : 'text-slate-400')}`}>
-                              {customScanResult.signal}
-                            </span>
-                          </div>
+                      ) : (
+                        <div className="text-rose-400 text-center py-2 flex items-center justify-center gap-1.5">
+                          <span>⚠️</span>
+                          <span>{customScanResult.message}</span>
                         </div>
-                        {customScanResult.bullish_fvg !== 'None' && (
-                          <div className="bg-emerald-950/20 p-2 rounded border border-emerald-900/30 text-[10px]">
-                            <span className="text-emerald-400/80 font-bold block mb-0.5">Bullish FVG Zone</span>
-                            <span className="text-emerald-300 font-bold">{customScanResult.bullish_fvg}</span>
-                          </div>
-                        )}
-                        {customScanResult.bearish_fvg !== 'None' && (
-                          <div className="bg-rose-950/20 p-2 rounded border border-rose-900/30 text-[10px]">
-                            <span className="text-rose-400/80 font-bold block mb-0.5">Bearish FVG Zone</span>
-                            <span className="text-rose-300 font-bold">{customScanResult.bearish_fvg}</span>
-                          </div>
-                        )}
-                        <p className="text-[10px] text-slate-400 border-t border-slate-800/40 pt-2 leading-relaxed">
-                          {customScanResult.explanation}
-                        </p>
-                      </div>
-                    ) : (
-                      <div className="text-rose-400 text-center py-2 flex items-center justify-center gap-1.5">
-                        <span>⚠️</span>
-                        <span>{customScanResult.message}</span>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-          
-          {/* ACTIVE TRADES (Current Ledger) - Always visible, fully expanded by default */}
-          <div className="border border-slate-800 bg-[#070b15]/95 rounded-2xl p-4 shadow-2xl h-fit">
-            <div className="flex flex-col gap-2.5 border-b border-slate-800/80 pb-3 mb-4">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="inline-block h-3 w-3 rounded-full bg-emerald-500 animate-pulse" />
-                  <h2 className="text-xs font-bold font-mono tracking-widest text-slate-400 uppercase">ACTIVE LEDGER ({activeTrades.length})</h2>
-                </div>
-                {/* TRADING MODE TOGGLE */}
-                <div className="flex items-center gap-1 bg-slate-900/60 p-0.5 rounded-md border border-slate-800 font-mono text-[9px] font-bold">
-                  <button 
-                    onClick={() => setTradeMode('MOCK')} 
-                    className={`px-1.5 py-0.5 rounded cursor-pointer transition-all ${tradeMode === 'MOCK' ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30' : 'text-slate-500'}`}
-                  >
-                    MOCK
-                  </button>
-                  <button 
-                    onClick={() => setTradeMode('LIVE')} 
-                    className={`px-1.5 py-0.5 rounded cursor-pointer transition-all ${tradeMode === 'LIVE' ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30' : 'text-slate-500'}`}
-                  >
-                    LIVE
-                  </button>
-                </div>
-              </div>
-              
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <span className="text-[9px] text-slate-500 font-mono uppercase tracking-widest">
-                    mode: <span className={tradeMode === 'LIVE' ? 'text-rose-400' : 'text-cyan-400'}>{tradeMode}</span>
-                  </span>
-                  {tradeMode === 'MOCK' && (userProfile?.subscription_status === 'active' || userProfile?.role === 'admin') && (
-                    <div className="flex items-center gap-1 bg-slate-900/60 p-0.5 rounded-md border border-slate-800 font-mono text-[8px] font-bold animate-fadeIn">
-                      <button 
-                        onClick={() => setMockAccountSource('ADMIN')} 
-                        className={`px-1.5 py-0.5 rounded cursor-pointer transition-all ${mockAccountSource === 'ADMIN' ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30' : 'text-slate-500'}`}
-                      >
-                        SHOWCASE
-                      </button>
-                      <button 
-                        onClick={() => setMockAccountSource('MY')} 
-                        className={`px-1.5 py-0.5 rounded cursor-pointer transition-all ${mockAccountSource === 'MY' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' : 'text-slate-500'}`}
-                      >
-                        MY MOCK
-                      </button>
+                      )}
                     </div>
                   )}
-                </div>
-                
-                {/* KILL SWITCH BUTTON */}
-                <button
-                  onClick={triggerKillAll}
-                  disabled={!(userProfile?.role === 'admin' || (tradeMode === 'MOCK' && mockAccountSource === 'MY') || (tradeMode === 'LIVE' && brokerSettings?.integrated)) || activeTrades.length === 0}
-                  className={`flex items-center gap-1 px-2.5 py-1 rounded text-[9px] font-bold font-mono tracking-widest transition-all ${
-                    (userProfile?.role === 'admin' || (tradeMode === 'MOCK' && mockAccountSource === 'MY') || (tradeMode === 'LIVE' && brokerSettings?.integrated)) && activeTrades.length > 0 
-                      ? 'bg-rose-600/20 hover:bg-rose-600/40 text-rose-400 hover:text-rose-300 border border-rose-500/30 cursor-pointer animate-pulse'
-                      : 'bg-slate-900/40 text-slate-600 border border-slate-800/40 cursor-not-allowed'
-                  }`}
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
-                  FLATTEN ALL
-                </button>
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-3 max-h-[350px] overflow-y-auto pr-1 scrollbar-thin">
-              {activeTrades.length === 0 ? (
-                <div className="text-center py-10 text-slate-500 font-mono text-[11px] border border-dashed border-slate-850 rounded-xl bg-slate-900/10">
-                  NO ACTIVE OPEN TRADES.
-                </div>
-              ) : (
-                activeTrades.map((t) => {
-                  const formattedTime = new Date(t.entry_time).toLocaleTimeString('en-US', {
-                    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
-                  });
-                  const isCurrentAsset = isAssetMatch(selectedAsset, t.symbol);
-
-                  // Selected asset match - show real-time progress slider
-                  const entry = Number(t.entry_price);
-                  const current = livePrices[t.symbol] || (isCurrentAsset ? liveSpotPrice : entry);
-                  const isBuy = t.direction === 'BUY';
-                  
-                  const parsed = parseSlTpFromLogic(t.setup_logic || "");
-                  const slVal = parsed ? parsed.sl : (t.direction === 'BUY' ? Number(t.entry_price - 150) : Number(t.entry_price + 150));
-                  const tpVal = parsed ? parsed.tp : (t.direction === 'BUY' ? Number(t.entry_price + 300) : Number(t.entry_price - 300));
-                  
-                  let progressPercent = 50;
-                  if (isBuy) {
-                    if (tpVal > slVal) {
-                      progressPercent = ((current - slVal) / (tpVal - slVal)) * 100;
-                    }
-                  } else {
-                    if (slVal > tpVal) {
-                      progressPercent = ((slVal - current) / (slVal - tpVal)) * 100;
-                    }
-                  }
-                  const clampedPercent = Math.max(0, Math.min(100, progressPercent));
-                  const currentUnrealized = isBuy ? (current - entry) * t.quantity : (entry - current) * t.quantity;
-
-                  return (
-                    <div 
-                      key={t.id}
-                      className="border border-cyan-500/35 bg-[#090d16]/80 rounded-xl p-3.5 shadow-md shadow-cyan-950/5"
-                    >
-                      {/* Header */}
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="text-[9px] font-bold font-mono px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/25 animate-pulse">
-                          ACTIVE RISK
-                        </span>
-                        <span className="text-[10px] text-slate-500 font-mono">{formattedTime}</span>
-                      </div>
-
-                      {/* Body */}
-                      <div className="flex items-center justify-between mb-3">
-                        <span className="text-xs font-bold text-slate-200">{t.symbol} {marketEnv === 'FOREX' ? (t.direction === 'BUY' ? 'LONG' : 'SHORT') : (t.direction === 'BUY' ? 'ATM CE' : 'ATM PE')}</span>
-                        <span className="text-xs font-bold font-mono text-slate-300">
-                          {formatPrice(Number(t.entry_price), marketEnv)}
-                        </span>
-                      </div>
-
-                      {/* Expanded Active Details */}
-                      <div className="pt-2 border-t border-slate-850/80 font-mono text-[10px] text-slate-400 space-y-2.5">
-                        <div>
-                          <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5">Setup Logic</span>
-                          <span className="text-slate-300 font-semibold block bg-slate-900/50 p-1.5 rounded border border-slate-850/50 leading-relaxed">
-                            {t.setup_logic || "Algorithm alignment trigger."}
-                          </span>
-                        </div>
-
-                        {/* Trade SL & TP Targets Display */}
-                        <div className="space-y-2">
-                          <div className="grid grid-cols-2 gap-3 bg-slate-950/60 p-2 rounded-lg border border-slate-850/50">
-                            <div>
-                              <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5">STOP LOSS</span>
-                              <span className="text-rose-400 font-bold font-mono text-[11px]">{formatPrice(slVal, marketEnv)}</span>
-                            </div>
-                            <div>
-                              <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5 text-right">TAKE PROFIT</span>
-                              <span className="text-emerald-400 font-bold font-mono text-[11px] block text-right">{formatPrice(tpVal, marketEnv)}</span>
-                            </div>
-                          </div>
-
-                          {/* Progress bar */}
-                          <div className="bg-slate-950/50 p-2 rounded-lg border border-slate-850/30">
-                            <div className="flex justify-between text-[8px] text-slate-500 font-mono mb-1">
-                              <span>SL</span>
-                              <span>ENTRY ({formatPrice(entry, marketEnv)})</span>
-                              <span>TP</span>
-                            </div>
-                            <div className="relative h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
-                              <div 
-                                className="absolute top-0 bottom-0 bg-emerald-500/20"
-                                style={{ left: isBuy ? '50%' : '0%', right: isBuy ? '0%' : '50%' }}
-                              />
-                              <div 
-                                className="absolute top-0 bottom-0 bg-rose-500/20"
-                                style={{ left: isBuy ? '0%' : '50%', right: isBuy ? '50%' : '0%' }}
-                              />
-                              <div 
-                                className="absolute top-0 bottom-0 w-1.5 bg-cyan-400 shadow-md shadow-cyan-400/80 rounded-full transition-all duration-300"
-                                style={{ left: `calc(${clampedPercent}% - 3px)` }}
-                              />
-                            </div>
-                            <div className="flex justify-between text-[8px] text-slate-400 font-mono mt-1">
-                              <span>{formatPrice(slVal, marketEnv)}</span>
-                              <span className="text-cyan-400 font-bold animate-pulse">LTP: {formatPrice(current, marketEnv)}</span>
-                              <span>{formatPrice(tpVal, marketEnv)}</span>
-                            </div>
-                          </div>
-
-                          {/* Live P&L outcome */}
-                          <div className="pt-2 border-t border-slate-850/30 flex items-center justify-between">
-                            <span className="text-slate-500 uppercase tracking-widest text-[8px]">Floating Return</span>
-                            <span className={`text-xs font-black ${currentUnrealized >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
-                              {currentUnrealized >= 0 ? '+' : ''}{formatCurrency(currentUnrealized, marketEnv)}
-                            </span>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center justify-between gap-4">
-                          <div>
-                            <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5">Execution Hash</span>
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-cyan-400 font-bold bg-slate-900 px-1.5 py-0.5 rounded border border-slate-850/50">
-                                {(t.execution_hash || "").slice(0, 10)}
-                              </span>
-                              <button 
-                                onClick={(e) => { e.stopPropagation(); copyToClipboard(t.execution_hash || ""); }}
-                                className="text-[9px] text-slate-500 hover:text-white cursor-pointer bg-slate-800 px-1 rounded transition-colors"
-                              >
-                                {copiedHash === t.execution_hash ? 'copied' : 'copy'}
-                              </button>
-                            </div>
-                          </div>
-                          <div>
-                            <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5 text-right">Lot Quantity</span>
-                            <span className="text-slate-300 font-bold block text-right mt-0.5">
-                              {formatActiveQty(t.quantity, t.symbol, marketEnv)}
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })
+                </>
               )}
             </div>
-          </div>
-
-          {/* HISTORICAL TRADES - Collapsible by default */}
-          <div className="border border-slate-800 bg-[#070b15]/95 rounded-2xl p-4 shadow-2xl h-fit">
-            <button 
-              onClick={() => setIsHistoryOpen(!isHistoryOpen)}
-              className="w-full flex items-center justify-between border-b border-slate-800/80 pb-3 cursor-pointer group bg-transparent border-0 text-left"
-            >
-              <div className="flex items-center gap-2">
-                <span className="inline-block h-3 w-3 rounded-full bg-slate-600 transition-colors group-hover:bg-slate-400" />
-                <h2 className="text-xs font-bold font-mono tracking-widest text-slate-400 uppercase group-hover:text-slate-200 transition-colors">
-                  PAST TRADES ({trades.filter(t => t.status === 'CLOSED' && isAssetMatch(selectedAsset, t.symbol)).length})
-                </h2>
-              </div>
-              <div className="flex items-center gap-2 font-mono text-[10px] text-slate-500 group-hover:text-slate-300 transition-colors">
-                <span>{isHistoryOpen ? 'COLLAPSE' : 'EXPAND'}</span>
-                <span className="transform transition-transform duration-200" style={{ transform: isHistoryOpen ? 'rotate(90deg)' : 'rotate(0deg)' }}>▶</span>
-              </div>
-            </button>
-
-            {isHistoryOpen && (
-              <div className="mt-4 space-y-4 animate-fadeIn">
-                <div className="flex items-center justify-between gap-2">
-                  {/* History Filter Tabs */}
-                  <div className="grid grid-cols-4 gap-1 bg-slate-900/60 p-1 rounded-lg border border-slate-800/50 font-mono text-[9px] flex-grow">
-                    {(['TODAY', 'WEEKLY', 'MONTHLY', 'ALL'] as const).map((filter) => (
-                      <button
-                        key={filter}
-                        onClick={() => setLedgerFilter(filter)}
-                        className={`py-1.5 px-0.5 rounded-md font-bold text-center cursor-pointer transition-all ${
-                          ledgerFilter === filter
-                            ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/30'
-                            : 'text-slate-500 hover:text-slate-300 border border-transparent'
-                        }`}
-                      >
-                        {filter}
-                      </button>
-                    ))}
+            
+            {/* ACTIVE TRADES (Current Ledger) - Always visible, fully expanded by default */}
+            <div className="border border-slate-800 bg-[#070b15]/95 rounded-2xl p-4 shadow-2xl h-fit">
+              <div className="flex flex-col gap-2.5 border-b border-slate-800/80 pb-3 mb-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="inline-block h-3 w-3 rounded-full bg-emerald-500 animate-pulse" />
+                    <h2 className="text-xs font-bold font-mono tracking-widest text-slate-400 uppercase">ACTIVE LEDGER ({activeTrades.length})</h2>
                   </div>
-
-                  {/* CSV / JSON Downloads */}
-                  <div className="flex gap-1 shrink-0 font-mono text-[8px] font-bold">
-                    <button
-                      onClick={downloadCSV}
-                      disabled={ledgerFilteredTrades.length === 0}
-                      className="border border-slate-800 bg-slate-900/60 hover:text-cyan-400 disabled:opacity-50 hover:border-cyan-500/30 px-2 py-2 rounded-lg cursor-pointer transition-all uppercase"
-                      title="Download CSV report"
+                  {/* TRADING MODE TOGGLE */}
+                  <div className="flex items-center gap-1 bg-slate-900/60 p-0.5 rounded-md border border-slate-800 font-mono text-[9px] font-bold">
+                    <button 
+                      onClick={() => setTradeMode('MOCK')} 
+                      className={`px-1.5 py-0.5 rounded cursor-pointer transition-all ${tradeMode === 'MOCK' ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30' : 'text-slate-500'}`}
                     >
-                      CSV
+                      MOCK
                     </button>
-                    <button
-                      onClick={downloadJSON}
-                      disabled={ledgerFilteredTrades.length === 0}
-                      className="border border-slate-800 bg-slate-900/60 hover:text-cyan-400 disabled:opacity-50 hover:border-cyan-500/30 px-2 py-2 rounded-lg cursor-pointer transition-all uppercase"
-                      title="Download JSON report"
+                    <button 
+                      onClick={() => setTradeMode('LIVE')} 
+                      className={`px-1.5 py-0.5 rounded cursor-pointer transition-all ${tradeMode === 'LIVE' ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30' : 'text-slate-500'}`}
                     >
-                      JSON
+                      LIVE
                     </button>
                   </div>
                 </div>
-
-                {/* Ledger scrollable container */}
-                <div className="flex flex-col gap-3 max-h-[400px] overflow-y-auto pr-1 scrollbar-thin">
-                  {ledgerFilteredTrades.length === 0 ? (
-                    <div className="text-center py-10 text-slate-500 font-mono text-xs border border-dashed border-slate-850 rounded-xl bg-slate-900/10">
-                      {ledgerFilter === 'TODAY' && "NO TRADES EXECUTED TODAY."}
-                      {ledgerFilter === 'WEEKLY' && "NO TRADES EXECUTED THIS WEEK."}
-                      {ledgerFilter === 'MONTHLY' && "NO TRADES EXECUTED THIS MONTH."}
-                      {ledgerFilter === 'ALL' && "NO TRADES FOUND IN SYSTEM LEDGER."}
-                    </div>
-                  ) : (
-                    ledgerFilteredTrades.map((t) => {
-                      const isExpanded = expandedTradeId === t.id;
-                      const formattedTime = new Date(t.entry_time).toLocaleTimeString('en-US', {
-                        hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
-                      });
-
-                      // Determine badge style
-                      let badgeText = "CLOSED";
-                      let badgeClass = "bg-slate-500/10 text-slate-400 border border-slate-500/25";
-                      
-                      const closedPnl = computePnl(t);
-                      if (closedPnl < 0) {
-                        badgeText = "STOP LOSS";
-                        badgeClass = "bg-rose-500/10 text-rose-400 border border-rose-500/25";
-                      } else {
-                        badgeText = "TAKE PROFIT";
-                        badgeClass = "bg-emerald-500/10 text-emerald-400 border border-emerald-500/25";
-                      }
-
-                      return (
-                        <div 
-                          key={t.id}
-                          onClick={() => setExpandedTradeId(isExpanded ? null : t.id)}
-                          className={`border border-slate-850 bg-slate-900/20 hover:bg-slate-900/40 rounded-xl p-3.5 cursor-pointer transition-all duration-200 ${isExpanded ? 'border-cyan-500/40 shadow-lg shadow-cyan-950/10 bg-[#090d16]/80' : ''}`}
+                
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <span className="text-[9px] text-slate-500 font-mono uppercase tracking-widest">
+                      mode: <span className={tradeMode === 'LIVE' ? 'text-rose-400' : 'text-cyan-400'}>{tradeMode}</span>
+                    </span>
+                    {tradeMode === 'MOCK' && (
+                      <div className="flex items-center gap-1.5 bg-slate-900/60 p-0.5 rounded-md border border-slate-800 font-mono text-[8px] font-bold animate-fadeIn">
+                        <button 
+                          onClick={() => setMockAccountSource('ADMIN')} 
+                          className={`px-1.5 py-0.5 rounded cursor-pointer transition-all ${mockAccountSource === 'ADMIN' ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30' : 'text-slate-500'}`}
                         >
-                          {/* Header: Badge & Time */}
-                          <div className="flex items-center justify-between mb-2">
-                            <span className={`text-[9px] font-bold font-mono px-2 py-0.5 rounded ${badgeClass}`}>
-                              {badgeText}
+                          SHOWCASE
+                        </button>
+                        {userProfile?.subscription_status === 'active' || userProfile?.role === 'admin' ? (
+                          <button 
+                            onClick={() => setMockAccountSource('MY')} 
+                            className={`px-1.5 py-0.5 rounded cursor-pointer transition-all ${mockAccountSource === 'MY' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' : 'text-slate-500'}`}
+                          >
+                            MY MOCK
+                          </button>
+                        ) : userProfile?.subscription_status === 'pending_approval' ? (
+                          <span 
+                            className="px-1.5 py-0.5 rounded text-amber-500/60 border border-amber-500/10 bg-slate-950/40 text-[7.5px] cursor-not-allowed font-bold"
+                            title="Your mock account request is pending admin approval."
+                          >
+                            MY MOCK (PENDING)
+                          </span>
+                        ) : (
+                          <button 
+                            type="button"
+                            onClick={handleRequestMockAccount}
+                            className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-450 border border-emerald-500/30 hover:bg-emerald-500/30 cursor-pointer transition-all text-[7.5px] font-black"
+                          >
+                            REQUEST MY MOCK
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  
+                  {/* KILL SWITCH BUTTON */}
+                  <button
+                    onClick={triggerKillAll}
+                    disabled={!(userProfile?.role === 'admin' || (tradeMode === 'MOCK' && mockAccountSource === 'MY') || (tradeMode === 'LIVE' && brokerSettings?.integrated)) || activeTrades.length === 0}
+                    className={`flex items-center gap-1 px-2.5 py-1 rounded text-[9px] font-bold font-mono tracking-widest transition-all ${
+                      (userProfile?.role === 'admin' || (tradeMode === 'MOCK' && mockAccountSource === 'MY') || (tradeMode === 'LIVE' && brokerSettings?.integrated)) && activeTrades.length > 0 
+                        ? 'bg-rose-600/20 hover:bg-rose-600/40 text-rose-400 hover:text-rose-300 border border-rose-500/30 cursor-pointer animate-pulse'
+                        : 'bg-slate-900/40 text-slate-600 border border-slate-800/40 cursor-not-allowed'
+                    }`}
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+                    FLATTEN ALL
+                  </button>
+                </div>
+              </div>
+  
+              <div className="flex flex-col gap-3 max-h-[350px] overflow-y-auto pr-1 scrollbar-thin">
+                {activeTrades.length === 0 ? (
+                  <div className="text-center py-10 text-slate-500 font-mono text-[11px] border border-dashed border-slate-850 rounded-xl bg-slate-900/10">
+                    NO ACTIVE OPEN TRADES.
+                  </div>
+                ) : (
+                  activeTrades.map((t) => {
+                    const formattedTime = new Date(t.entry_time).toLocaleTimeString('en-US', {
+                      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+                    });
+                    const isCurrentAsset = isAssetMatch(selectedAsset, t.symbol);
+  
+                    // Selected asset match - show real-time progress slider
+                    const entry = Number(t.entry_price);
+                    const current = livePrices[t.symbol] || (isCurrentAsset ? liveSpotPrice : entry);
+                    const isBuy = t.direction === 'BUY';
+                    
+                    const parsed = parseSlTpFromLogic(t.setup_logic || "");
+                    const slVal = parsed ? parsed.sl : (t.direction === 'BUY' ? Number(t.entry_price - 150) : Number(t.entry_price + 150));
+                    const tpVal = parsed ? parsed.tp : (t.direction === 'BUY' ? Number(t.entry_price + 300) : Number(t.entry_price - 300));
+                    
+                    let progressPercent = 50;
+                    if (isBuy) {
+                      if (tpVal > slVal) {
+                        progressPercent = ((current - slVal) / (tpVal - slVal)) * 100;
+                      }
+                    } else {
+                      if (slVal > tpVal) {
+                        progressPercent = ((slVal - current) / (slVal - tpVal)) * 100;
+                      }
+                    }
+                    const clampedPercent = Math.max(0, Math.min(100, progressPercent));
+                    const currentUnrealized = isBuy ? (current - entry) * t.quantity : (entry - current) * t.quantity;
+  
+                    return (
+                      <div 
+                        key={t.id}
+                        className="border border-cyan-500/35 bg-[#090d16]/80 rounded-xl p-3.5 shadow-md shadow-cyan-950/5"
+                      >
+                        {/* Header */}
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-[9px] font-bold font-mono px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/25 animate-pulse">
+                            ACTIVE RISK
+                          </span>
+                          <span className="text-[10px] text-slate-500 font-mono">{formattedTime}</span>
+                        </div>
+  
+                        {/* Body */}
+                        <div className="flex items-center justify-between mb-3">
+                          <span className="text-xs font-bold text-slate-200">{t.symbol} {marketEnv === 'FOREX' ? (t.direction === 'BUY' ? 'LONG' : 'SHORT') : (t.direction === 'BUY' ? 'ATM CE' : 'ATM PE')}</span>
+                          <span className="text-xs font-bold font-mono text-slate-300">
+                            {formatPrice(Number(t.entry_price), marketEnv)}
+                          </span>
+                        </div>
+  
+                        {/* Expanded Active Details */}
+                        <div className="pt-2 border-t border-slate-850/80 font-mono text-[10px] text-slate-400 space-y-2.5">
+                          <div>
+                            <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5">Setup Logic</span>
+                            <span className="text-slate-300 font-semibold block bg-slate-900/50 p-1.5 rounded border border-slate-850/50 leading-relaxed">
+                              {t.setup_logic || "Algorithm alignment trigger."}
                             </span>
-                            <span className="text-[10px] text-slate-500 font-mono">{formattedTime}</span>
                           </div>
-
-                          {/* Body: Symbol & Price */}
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs font-bold text-slate-200">{t.symbol} {marketEnv === 'FOREX' ? (t.direction === 'BUY' ? 'LONG' : 'SHORT') : (t.direction === 'BUY' ? 'ATM CE' : 'ATM PE')}</span>
-                            <span className="text-xs font-bold font-mono text-slate-300">
-                              {formatPrice(Number(t.entry_price), marketEnv)}
-                            </span>
-                          </div>
-
-                          {/* Expandable Section */}
-                          {isExpanded && (
-                            <div className="mt-3 pt-3 border-t border-slate-850/80 font-mono text-[10px] text-slate-400 space-y-2.5 animate-fadeIn">
+  
+                          {/* Trade SL & TP Targets Display */}
+                          <div className="space-y-2">
+                            <div className="grid grid-cols-2 gap-3 bg-slate-950/60 p-2 rounded-lg border border-slate-850/50">
                               <div>
-                                <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5">Setup Logic</span>
-                                <span className="text-slate-300 font-semibold block bg-slate-900/50 p-1.5 rounded border border-slate-850/50 leading-relaxed">
-                                  {t.setup_logic || "Algorithm alignment trigger."}
-                                </span>
+                                <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5">STOP LOSS</span>
+                                <span className="text-rose-400 font-bold font-mono text-[11px]">{formatPrice(slVal, marketEnv)}</span>
                               </div>
-
-                              {/* Trade SL & TP Targets Display */}
-                              {(() => {
-                                const parsed = parseSlTpFromLogic(t.setup_logic || "");
-                                const slVal = parsed ? parsed.sl : (t.direction === 'BUY' ? Number(t.entry_price - 150) : Number(t.entry_price + 150));
-                                const tpVal = parsed ? parsed.tp : (t.direction === 'BUY' ? Number(t.entry_price + 300) : Number(t.entry_price - 300));
-                                return (
-                                  <div className="grid grid-cols-2 gap-3 bg-slate-950/60 p-2 rounded-lg border border-slate-850/50">
-                                    <div>
-                                      <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5">STOP LOSS TARGET</span>
-                                      <span className="text-rose-400 font-bold font-mono text-[11px]">{formatPrice(slVal, marketEnv)}</span>
+                              <div>
+                                <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5 text-right">TAKE PROFIT</span>
+                                <span className="text-emerald-400 font-bold font-mono text-[11px] block text-right">{formatPrice(tpVal, marketEnv)}</span>
+                              </div>
+                            </div>
+  
+                            {/* Progress bar */}
+                            <div className="bg-slate-950/50 p-2 rounded-lg border border-slate-850/30">
+                              <div className="flex justify-between text-[8px] text-slate-500 font-mono mb-1">
+                                <span>SL</span>
+                                <span>ENTRY ({formatPrice(entry, marketEnv)})</span>
+                                <span>TP</span>
+                              </div>
+                              <div className="relative h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
+                                <div 
+                                  className="absolute top-0 bottom-0 bg-emerald-500/20"
+                                  style={{ left: isBuy ? '50%' : '0%', right: isBuy ? '0%' : '50%' }}
+                                />
+                                <div 
+                                  className="absolute top-0 bottom-0 bg-rose-500/20"
+                                  style={{ left: isBuy ? '0%' : '50%', right: isBuy ? '50%' : '0%' }}
+                                />
+                                <div 
+                                  className="absolute top-0 bottom-0 w-1.5 bg-cyan-400 shadow-md shadow-cyan-400/80 rounded-full transition-all duration-300"
+                                  style={{ left: `calc(${clampedPercent}% - 3px)` }}
+                                />
+                              </div>
+                              <div className="flex justify-between text-[8px] text-slate-400 font-mono mt-1">
+                                <span>{formatPrice(slVal, marketEnv)}</span>
+                                <span className="text-cyan-400 font-bold animate-pulse">LTP: {formatPrice(current, marketEnv)}</span>
+                                <span>{formatPrice(tpVal, marketEnv)}</span>
+                              </div>
+                            </div>
+  
+                            {/* Live P&L outcome */}
+                            <div className="pt-2 border-t border-slate-850/30 flex items-center justify-between">
+                              <span className="text-slate-500 uppercase tracking-widest text-[8px]">Floating Return</span>
+                              <span className={`text-xs font-black ${currentUnrealized >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                                {currentUnrealized >= 0 ? '+' : ''}{formatCurrency(currentUnrealized, marketEnv)}
+                              </span>
+                            </div>
+                          </div>
+  
+                          <div className="flex items-center justify-between gap-4">
+                            <div>
+                              <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5">Execution Hash</span>
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-cyan-400 font-bold bg-slate-900 px-1.5 py-0.5 rounded border border-slate-850/50">
+                                  {(t.execution_hash || "").slice(0, 10)}
+                                </span>
+                                <button 
+                                  onClick={(e) => { e.stopPropagation(); copyToClipboard(t.execution_hash || ""); }}
+                                  className="text-[9px] text-slate-500 hover:text-white cursor-pointer bg-slate-800 px-1 rounded transition-colors"
+                                >
+                                  {copiedHash === t.execution_hash ? 'copied' : 'copy'}
+                                </button>
+                              </div>
+                            </div>
+                            <div>
+                              <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5 text-right">Lot Quantity</span>
+                              <span className="text-slate-300 font-bold block text-right mt-0.5">
+                                {formatActiveQty(t.quantity, t.symbol, marketEnv)}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+  
+            {/* HISTORICAL TRADES - Collapsible by default */}
+            <div className="border border-slate-800 bg-[#070b15]/95 rounded-2xl p-4 shadow-2xl h-fit">
+              <button 
+                onClick={() => setIsHistoryOpen(!isHistoryOpen)}
+                className="w-full flex items-center justify-between border-b border-slate-800/80 pb-3 cursor-pointer group bg-transparent border-0 text-left"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="inline-block h-3 w-3 rounded-full bg-slate-600 transition-colors group-hover:bg-slate-400" />
+                  <h2 className="text-xs font-bold font-mono tracking-widest text-slate-400 uppercase group-hover:text-slate-200 transition-colors">
+                    PAST TRADES ({trades.filter(t => t.status === 'CLOSED' && isAssetMatch(selectedAsset, t.symbol)).length})
+                  </h2>
+                </div>
+                <div className="flex items-center gap-2 font-mono text-[10px] text-slate-500 group-hover:text-slate-300 transition-colors">
+                  <span>{isHistoryOpen ? 'COLLAPSE' : 'EXPAND'}</span>
+                  <span className="transform transition-transform duration-200" style={{ transform: isHistoryOpen ? 'rotate(90deg)' : 'rotate(0deg)' }}>▶</span>
+                </div>
+              </button>
+  
+              {isHistoryOpen && (
+                <div className="mt-4 space-y-4 animate-fadeIn">
+                  <div className="flex items-center justify-between gap-2">
+                    {/* History Filter Tabs */}
+                    <div className="grid grid-cols-4 gap-1 bg-slate-900/60 p-1 rounded-lg border border-slate-800/50 font-mono text-[9px] flex-grow">
+                      {(['TODAY', 'WEEKLY', 'MONTHLY', 'ALL'] as const).map((filter) => (
+                        <button
+                          key={filter}
+                          onClick={() => setLedgerFilter(filter)}
+                          className={`py-1.5 px-0.5 rounded-md font-bold text-center cursor-pointer transition-all ${
+                            ledgerFilter === filter
+                              ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/30'
+                              : 'text-slate-500 hover:text-slate-300 border border-transparent'
+                          }`}
+                        >
+                          {filter}
+                        </button>
+                      ))}
+                    </div>
+  
+                    {/* CSV / JSON Downloads */}
+                    <div className="flex gap-1 shrink-0 font-mono text-[8px] font-bold">
+                      <button
+                        onClick={downloadCSV}
+                        disabled={ledgerFilteredTrades.length === 0}
+                        className="border border-slate-800 bg-slate-900/60 hover:text-cyan-400 disabled:opacity-50 hover:border-cyan-500/30 px-2 py-2 rounded-lg cursor-pointer transition-all uppercase"
+                        title="Download CSV report"
+                      >
+                        CSV
+                      </button>
+                      <button
+                        onClick={downloadJSON}
+                        disabled={ledgerFilteredTrades.length === 0}
+                        className="border border-slate-800 bg-slate-900/60 hover:text-cyan-400 disabled:opacity-50 hover:border-cyan-500/30 px-2 py-2 rounded-lg cursor-pointer transition-all uppercase"
+                        title="Download JSON report"
+                      >
+                        JSON
+                      </button>
+                    </div>
+                  </div>
+  
+                  {/* Ledger scrollable container */}
+                  <div className="flex flex-col gap-3 max-h-[400px] overflow-y-auto pr-1 scrollbar-thin">
+                    {ledgerFilteredTrades.length === 0 ? (
+                      <div className="text-center py-10 text-slate-500 font-mono text-xs border border-dashed border-slate-850 rounded-xl bg-slate-900/10">
+                        {ledgerFilter === 'TODAY' && "NO TRADES EXECUTED TODAY."}
+                        {ledgerFilter === 'WEEKLY' && "NO TRADES EXECUTED THIS WEEK."}
+                        {ledgerFilter === 'MONTHLY' && "NO TRADES EXECUTED THIS MONTH."}
+                        {ledgerFilter === 'ALL' && "NO TRADES FOUND IN SYSTEM LEDGER."}
+                      </div>
+                    ) : (
+                      ledgerFilteredTrades.map((t) => {
+                        const isExpanded = expandedTradeId === t.id;
+                        const formattedTime = new Date(t.entry_time).toLocaleTimeString('en-US', {
+                          hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+                        });
+  
+                        // Determine badge style
+                        let badgeText = "CLOSED";
+                        let badgeClass = "bg-slate-500/10 text-slate-400 border border-slate-500/25";
+                        
+                        const closedPnl = computePnl(t);
+                        if (closedPnl < 0) {
+                          badgeText = "STOP LOSS";
+                          badgeClass = "bg-rose-500/10 text-rose-400 border border-rose-500/25";
+                        } else {
+                          badgeText = "TAKE PROFIT";
+                          badgeClass = "bg-emerald-500/10 text-emerald-400 border border-emerald-500/25";
+                        }
+  
+                        return (
+                          <div 
+                            key={t.id}
+                            onClick={() => setExpandedTradeId(isExpanded ? null : t.id)}
+                            className={`border border-slate-850 bg-slate-900/20 hover:bg-slate-900/40 rounded-xl p-3.5 cursor-pointer transition-all duration-200 ${isExpanded ? 'border-cyan-500/40 shadow-lg shadow-cyan-950/10 bg-[#090d16]/80' : ''}`}
+                          >
+                            {/* Header: Badge & Time */}
+                            <div className="flex items-center justify-between mb-2">
+                              <span className={`text-[9px] font-bold font-mono px-2 py-0.5 rounded ${badgeClass}`}>
+                                {badgeText}
+                              </span>
+                              <span className="text-[10px] text-slate-500 font-mono">{formattedTime}</span>
+                            </div>
+  
+                            {/* Body: Symbol & Price */}
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-bold text-slate-200">{t.symbol} {marketEnv === 'FOREX' ? (t.direction === 'BUY' ? 'LONG' : 'SHORT') : (t.direction === 'BUY' ? 'ATM CE' : 'ATM PE')}</span>
+                              <span className="text-xs font-bold font-mono text-slate-300">
+                                {formatPrice(Number(t.entry_price), marketEnv)}
+                              </span>
+                            </div>
+  
+                            {/* Expandable Section */}
+                            {isExpanded && (
+                              <div className="mt-3 pt-3 border-t border-slate-850/80 font-mono text-[10px] text-slate-400 space-y-2.5 animate-fadeIn">
+                                <div>
+                                  <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5">Setup Logic</span>
+                                  <span className="text-slate-300 font-semibold block bg-slate-900/50 p-1.5 rounded border border-slate-850/50 leading-relaxed">
+                                    {t.setup_logic || "Algorithm alignment trigger."}
+                                  </span>
+                                </div>
+  
+                                {/* Trade SL & TP Targets Display */}
+                                {(() => {
+                                  const parsed = parseSlTpFromLogic(t.setup_logic || "");
+                                  const slVal = parsed ? parsed.sl : (t.direction === 'BUY' ? Number(t.entry_price - 150) : Number(t.entry_price + 150));
+                                  const tpVal = parsed ? parsed.tp : (t.direction === 'BUY' ? Number(t.entry_price + 300) : Number(t.entry_price - 300));
+                                  return (
+                                    <div className="grid grid-cols-2 gap-3 bg-slate-950/60 p-2 rounded-lg border border-slate-850/50">
+                                      <div>
+                                        <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5">STOP LOSS TARGET</span>
+                                        <span className="text-rose-400 font-bold font-mono text-[11px]">{formatPrice(slVal, marketEnv)}</span>
+                                      </div>
+                                      <div>
+                                        <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5 text-right">TAKE PROFIT TARGET</span>
+                                        <span className="text-emerald-400 font-bold font-mono text-[11px] block text-right">{formatPrice(tpVal, marketEnv)}</span>
+                                      </div>
                                     </div>
-                                    <div>
-                                      <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5 text-right">TAKE PROFIT TARGET</span>
-                                      <span className="text-emerald-400 font-bold font-mono text-[11px] block text-right">{formatPrice(tpVal, marketEnv)}</span>
+                                  );
+                                })()}
+  
+                                <div className="flex items-center justify-between gap-4">
+                                  <div>
+                                    <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5">Execution Hash</span>
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="text-cyan-400 font-bold bg-slate-900 px-1.5 py-0.5 rounded border border-slate-850/50">
+                                        {(t.execution_hash || "").slice(0, 10)}
+                                      </span>
+                                      <button 
+                                        onClick={(e) => { e.stopPropagation(); copyToClipboard(t.execution_hash || ""); }}
+                                        className="text-[9px] text-slate-500 hover:text-white cursor-pointer bg-slate-800 px-1 rounded transition-colors"
+                                      >
+                                        {copiedHash === t.execution_hash ? 'copied' : 'copy'}
+                                      </button>
                                     </div>
                                   </div>
-                                );
-                              })()}
-
-                              <div className="flex items-center justify-between gap-4">
-                                <div>
-                                  <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5">Execution Hash</span>
-                                  <div className="flex items-center gap-1.5">
-                                    <span className="text-cyan-400 font-bold bg-slate-900 px-1.5 py-0.5 rounded border border-slate-850/50">
-                                      {(t.execution_hash || "").slice(0, 10)}
+                                  <div>
+                                    <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5 text-right">Slip Offset</span>
+                                    <span className="text-slate-300 font-bold block text-right mt-0.5">
+                                      {t.slippage ? `${formatPrice(Number(t.slippage), marketEnv)} pts` : '—'}
                                     </span>
-                                    <button 
-                                      onClick={(e) => { e.stopPropagation(); copyToClipboard(t.execution_hash || ""); }}
-                                      className="text-[9px] text-slate-500 hover:text-white cursor-pointer bg-slate-800 px-1 rounded transition-colors"
-                                    >
-                                      {copiedHash === t.execution_hash ? 'copied' : 'copy'}
-                                    </button>
                                   </div>
                                 </div>
-                                <div>
-                                  <span className="text-slate-500 uppercase tracking-widest text-[8px] block mb-0.5 text-right">Slip Offset</span>
-                                  <span className="text-slate-300 font-bold block text-right mt-0.5">
-                                    {t.slippage ? `${formatPrice(Number(t.slippage), marketEnv)} pts` : '—'}
+  
+                                <div className="pt-2 border-t border-slate-850/30 flex items-center justify-between">
+                                  <span className="text-slate-500 uppercase tracking-widest text-[8px]">PnL Outcome</span>
+                                  <span className={`text-xs font-black ${closedPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                                    {closedPnl >= 0 ? '+' : ''}{formatCurrency(closedPnl, marketEnv)}
                                   </span>
                                 </div>
                               </div>
-
-                              <div className="pt-2 border-t border-slate-850/30 flex items-center justify-between">
-                                <span className="text-slate-500 uppercase tracking-widest text-[8px]">PnL Outcome</span>
-                                <span className={`text-xs font-black ${closedPnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
-                                  {closedPnl >= 0 ? '+' : ''}{formatCurrency(closedPnl, marketEnv)}
-                                </span>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })
-                  )}
+                            )}
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
                 </div>
-              </div>
-            )}
-          </div>
+              )}
+            </div>
+            </>
+          )}
 
         </div>
 
