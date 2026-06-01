@@ -1605,7 +1605,7 @@ export default function Dashboard() {
       } else {
         alert("Failed to request mock account.");
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
       alert("Error requesting mock account: " + err.message);
     }
@@ -4137,11 +4137,11 @@ export default function Dashboard() {
                   <span className="text-cyan-400 font-bold">{selectedAssetLabel} ({selectedAsset})</span>
                 </div>
                 <div className="flex flex-wrap items-center gap-3">
-                  <span className="text-slate-500">STD LOT / SEBI SIZE: <span className="text-slate-200 font-bold">{getStandardLotSize(selectedAsset, marketEnv)}</span></span>
+                  <span className="text-slate-500">STD LOT / SEBI SIZE: <span className="text-slate-200 font-bold">{getStandardLotSize(selectedAsset, marketEnv as "INDIAN" | "FOREX")}</span></span>
                   <span className="text-slate-800">|</span>
-                  <span className="text-slate-500">TODAY P&L: <span className={`${assetTodayPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'} font-bold`}>{assetTodayPnl >= 0 ? '+' : ''}{formatCurrency(assetTodayPnl, marketEnv)}</span></span>
+                  <span className="text-slate-500">TODAY P&L: <span className={`${assetTodayPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'} font-bold`}>{assetTodayPnl >= 0 ? '+' : ''}{formatCurrency(assetTodayPnl, marketEnv as "INDIAN" | "FOREX")}</span></span>
                   <span className="text-slate-800">|</span>
-                  <span className="text-slate-500">OVERALL P&L: <span className={`${assetOverallPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'} font-bold`}>{assetOverallPnl >= 0 ? '+' : ''}{formatCurrency(assetOverallPnl, marketEnv)}</span></span>
+                  <span className="text-slate-500">OVERALL P&L: <span className={`${assetOverallPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'} font-bold`}>{assetOverallPnl >= 0 ? '+' : ''}{formatCurrency(assetOverallPnl, marketEnv as "INDIAN" | "FOREX")}</span></span>
                 </div>
               </div>
             )}
@@ -4759,14 +4759,14 @@ export default function Dashboard() {
                         </tr>
                       </thead>
                       <tbody>
-                        {filteredScreener.length === 0 ? (
+                        {screenerResults.length === 0 ? (
                           <tr>
                             <td colSpan={6} className="text-center py-6 text-slate-500">
                               No assets match the current screening parameters.
                             </td>
                           </tr>
                         ) : (
-                          filteredScreener.map((item) => {
+                          screenerResults.map((item: any) => {
                             const comps = getComponentsForSymbol(item.symbol);
                             const ratingRes = compositeScore(comps.fund, comps.tech, comps.mom, comps.sent, comps.inst, item.price || 100, 100, swingWeights);
                             let cap = 'Large Cap';
@@ -5100,8 +5100,7 @@ export default function Dashboard() {
             </div>
           )}
           </div>
-        </div>
-
+          
         {/* RIGHT COLUMN: Interactive Ledger (1/3 width) */}
         <div className="flex flex-col gap-4 w-full">
 
