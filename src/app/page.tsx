@@ -6238,7 +6238,7 @@ export default function Dashboard() {
                         </tr>
                       </thead>
                       <tbody>
-                        {userProfilesList.filter((p: any) => p.subscription_status !== 'blocked').map((p: any) => (
+                        {userProfilesList.filter((p: any) => p.token_balance >= 0).map((p: any) => (
                           <tr key={p.id} className="border-b border-slate-850/50 hover:bg-slate-900/20">
                             <td className="py-2 px-2 text-slate-200 font-bold">{p.email}</td>
                             <td className="py-2 px-2 text-slate-400">{p.role}</td>
