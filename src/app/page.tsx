@@ -1562,6 +1562,9 @@ export default function Dashboard() {
   const [adminInsights, setAdminInsights] = useState<any>(null);
   const [adminInsightsLoading, setAdminInsightsLoading] = useState(false);
   const [userProfilesList, setUserProfilesList] = useState<any[]>([]);
+  const [selectedWatchlistUserId, setSelectedWatchlistUserId] = useState<string | null>(null);
+  const [selectedUserWatchlist, setSelectedUserWatchlist] = useState<any[]>([]);
+  const [selectedUserWatchlistLoading, setSelectedUserWatchlistLoading] = useState<boolean>(false);
 
   // BIFROST Phase 5 States & Helpers
   const [tradeMode, setTradeMode] = useState<'MOCK' | 'LIVE'>('MOCK');
@@ -2068,6 +2071,27 @@ export default function Dashboard() {
       }
     } catch (err) {
       console.error("Error updating user profile:", err);
+    }
+  };
+
+  const loadUserWatchlist = async (userId: string) => {
+    setSelectedUserWatchlistLoading(true);
+    setSelectedWatchlistUserId(userId);
+    try {
+      const headers = await getAuthHeaders();
+      const res = await fetch(`${BACKEND_URL}/api/admin/user-watchlist/${userId}`, { headers });
+      if (res.ok) {
+        const data = await res.json();
+        setSelectedUserWatchlist(data);
+      } else {
+        console.error("Failed to load user watchlist:", res.statusText);
+        setSelectedUserWatchlist([]);
+      }
+    } catch (err) {
+      console.error("Error loading user watchlist:", err);
+      setSelectedUserWatchlist([]);
+    } finally {
+      setSelectedUserWatchlistLoading(false);
     }
   };
 
@@ -6242,6 +6266,13 @@ export default function Dashboard() {
                               >
                                 EDIT TOKENS
                               </button>
+                              <button
+                                type="button"
+                                onClick={() => loadUserWatchlist(p.id)}
+                                className="bg-purple-500/15 text-purple-400 border border-purple-500/30 hover:bg-purple-500/25 px-1.5 py-0.5 rounded text-[8px] font-bold cursor-pointer"
+                              >
+                                WATCHLIST
+                              </button>
                             </td>
                           </tr>
                         ))}
@@ -6249,6 +6280,65 @@ export default function Dashboard() {
                     </table>
                   </div>
                 </div>
+
+                {/* Watchlist Inspection Panel */}
+                {selectedWatchlistUserId && (
+                  <div className="bg-purple-950/10 border border-purple-500/20 rounded-2xl p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[9px] uppercase tracking-widest text-purple-400 font-bold">
+                        📦 Watchlist for {userProfilesList.find(p => p.id === selectedWatchlistUserId)?.email || 'Selected User'}
+                      </span>
+                      <button
+                        onClick={() => setSelectedWatchlistUserId(null)}
+                        className="text-slate-500 hover:text-slate-300 text-[10px] font-bold cursor-pointer"
+                      >
+                        ✕ CLOSE PANEL
+                      </button>
+                    </div>
+
+                    {selectedUserWatchlistLoading ? (
+                      <div className="flex justify-center items-center py-6 text-purple-400 font-bold">
+                        <span className="animate-spin rounded-full h-4 w-4 border-t border-b border-purple-500 mr-2" />
+                        RETRIEVING WATCHLIST...
+                      </div>
+                    ) : selectedUserWatchlist.length === 0 ? (
+                      <div className="text-center py-6 text-slate-500 italic">
+                        No watchlisted assets for this user.
+                      </div>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left border-collapse text-[10px]">
+                          <thead>
+                            <tr className="border-b border-slate-800 text-slate-500 uppercase tracking-widest text-[8px]">
+                              <th className="py-2 px-2">Symbol</th>
+                              <th className="py-2 px-2">Name</th>
+                              <th className="py-2 px-2">LTP</th>
+                              <th className="py-2 px-2">Stop Loss</th>
+                              <th className="py-2 px-2">Target 1</th>
+                              <th className="py-2 px-2">Target 2</th>
+                              <th className="py-2 px-2 text-right">Added At</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {selectedUserWatchlist.map((item: any) => (
+                              <tr key={item.id} className="border-b border-slate-850/50 hover:bg-purple-900/10">
+                                <td className="py-2 px-2 font-bold text-slate-200">{item.symbol}</td>
+                                <td className="py-2 px-2 text-slate-400">{item.name}</td>
+                                <td className="py-2 px-2 text-cyan-400 font-bold">₹{item.price ? item.price.toFixed(2) : '-'}</td>
+                                <td className="py-2 px-2 text-rose-400 font-semibold">₹{item.stop_loss ? item.stop_loss.toFixed(2) : '-'}</td>
+                                <td className="py-2 px-2 text-emerald-400 font-semibold">₹{item.target_1 ? item.target_1.toFixed(2) : '-'}</td>
+                                <td className="py-2 px-2 text-emerald-400 font-semibold">₹{item.target_2 ? item.target_2.toFixed(2) : '-'}</td>
+                                <td className="py-2 px-2 text-right text-slate-500">
+                                  {item.added_at ? new Date(item.added_at).toLocaleDateString() : '-'}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* Recent scan logs */}
                 <div className="bg-slate-900/30 p-4 border border-slate-850 rounded-2xl">
