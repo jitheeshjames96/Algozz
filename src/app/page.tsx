@@ -5815,7 +5815,6 @@ export default function Dashboard() {
         </div>
 
       </div>
-      )}
 
       {/* ── Floating AI Assistant Drawer ── */}
       <div className="fixed bottom-6 right-6 z-50 font-mono">
@@ -6069,6 +6068,7 @@ export default function Dashboard() {
             </div>
           </div>
         </div>
+      )}
       {/* Admin Command Center Modal */}
       {isAdminModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 font-mono">
