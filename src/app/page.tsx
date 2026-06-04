@@ -1575,26 +1575,27 @@ export default function Dashboard() {
   const requestPremiumUpgrade = async () => {
     try {
       const headers = await getAuthHeaders();
-      const res = await fetch(`${BACKEND_URL}/api/subscription/request`, {
+      const res = await fetch(`${BACKEND_URL}/api/upgrade/request`, {
         method: 'POST',
         headers
       });
       if (res.ok) {
-        alert("Subscription request sent to admin email successfully!");
+        alert("Premium upgrade request sent to admin successfully!");
         const { data: profileData } = await supabase.from('user_profiles').select('*').eq('id', user.id).single();
         if (profileData) setUserProfile(profileData);
       } else {
-        alert("Failed to request subscription.");
+        alert("Failed to request upgrade.");
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
+      alert("Error requesting upgrade: " + err.message);
     }
   };
 
   const handleRequestMockAccount = async () => {
     try {
       const headers = await getAuthHeaders();
-      const res = await fetch(`${BACKEND_URL}/api/subscription/request`, {
+      const res = await fetch(`${BACKEND_URL}/api/mock/request`, {
         method: 'POST',
         headers
       });
@@ -4071,10 +4072,7 @@ export default function Dashboard() {
       )}
 
       {/* 3. Split Screen Brokerage Layout */}
-      {isTokenExpired ? (
-        <PremiumUpgradeBlocker feature={marketEnv === 'SWING' ? "Swing Trading Dashboard" : "Trading Dashboard"} onRequestUpgrade={requestPremiumUpgrade} />
-      ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         
         {/* LEFT COLUMN: Candlestick/Equity Curve + Open Positions (2/3 width) */}
         <div className="lg:col-span-2 flex flex-col gap-6">
@@ -5197,8 +5195,7 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              {/* ADMIN WATCHLIST ADD FORM */}
-              {userProfile?.role === 'admin' && (
+              {/* WATCHLIST ADD FORM */}
                 <div className="border border-slate-800 bg-[#070b15]/95 rounded-2xl p-5 shadow-2xl flex flex-col gap-4">
                   <div className="border-b border-slate-850 pb-3">
                     <h2 className="text-xs font-black tracking-widest text-slate-400 uppercase font-mono">ADD WATCHLIST ASSET TARGETS</h2>
@@ -5296,7 +5293,6 @@ export default function Dashboard() {
                     </button>
                   </form>
                 </div>
-              )}
             </>
           ) : (
             <>
@@ -6073,8 +6069,6 @@ export default function Dashboard() {
             </div>
           </div>
         </div>
-      )}
-
       {/* Admin Command Center Modal */}
       {isAdminModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 font-mono">
