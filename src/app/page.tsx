@@ -1859,6 +1859,29 @@ export default function Dashboard() {
   const [wlSaving, setWlSaving] = useState(false);
   const [picksSearch, setPicksSearch] = useState('');
 
+  // ── 3-Tab Control Panel State ────────────────────────────────────────────────
+  const [controlPanelTab, setControlPanelTab] = useState<'SCANNER' | 'MANUAL' | 'ALGO'>('SCANNER');
+  
+  // Manual Trade Form State
+  const [manualSymbol, setManualSymbol] = useState('');
+  const [manualDirection, setManualDirection] = useState<'BUY' | 'SELL'>('BUY');
+  const [manualQty, setManualQty] = useState('');
+  const [manualSl, setManualSl] = useState('');
+  const [manualTp, setManualTp] = useState('');
+  const [manualTrailing, setManualTrailing] = useState(false);
+  const [manualTrailingOffset, setManualTrailingOffset] = useState('');
+  const [manualTradeLoading, setManualTradeLoading] = useState(false);
+  const [smcSetupLoading, setSmcSetupLoading] = useState(false);
+  
+  // Algo Strategies State
+  const [algoActiveStrategy, setAlgoActiveStrategy] = useState<string | null>(null);
+  const [customStrategyJson, setCustomStrategyJson] = useState('{\n  "name": "My Custom Strategy",\n  "entry": "FVG + OB confluence",\n  "sl_pct": 0.5,\n  "tp_pct": 1.0,\n  "timeframe": "15m",\n  "filters": ["ema_trend", "session_time"]\n}');
+  const [customStrategyValid, setCustomStrategyValid] = useState(true);
+  const [algoStrategyDeployLoading, setAlgoStrategyDeployLoading] = useState(false);
+
+  // Admin approvals sub-tab state
+  const [adminSubTab, setAdminSubTab] = useState<'USERS' | 'MOCK_REQ' | 'UPGRADE_REQ' | 'LOGS' | 'SETTINGS'>('USERS');
+
 
   // Proportional Weights Slider Adjuster
   const handleWeightChange = (key: string, val: number) => {
@@ -2422,7 +2445,11 @@ export default function Dashboard() {
       let tradesQuery = supabase.from(tradesTable).select('*');
       if (queryUserId) {
         if ((isAdmin || isIntegrated) && tradeMode === 'LIVE') {
-          tradesQuery = tradesQuery.eq('user_id', queryUserId);
+          if (isAdmin) {
+            tradesQuery = tradesQuery.or(`user_id.eq.${queryUserId},user_id.is.null`);
+          } else {
+            tradesQuery = tradesQuery.eq('user_id', queryUserId);
+          }
         } else if (tradeMode === 'MOCK' && mockAccountSource === 'MY') {
           tradesQuery = tradesQuery.eq('user_id', queryUserId);
         } else {
@@ -3240,8 +3267,122 @@ export default function Dashboard() {
     XLSX.writeFile(wb, `BIFROST_Performance_${selectedAsset.replace('=X', '')}.xlsx`);
   };
 
+  // ── Manual Trade Handler ──────────────────────────────────────────────────
+  const handleManualOpenTrade = async () => {
+    if (!manualSymbol.trim()) { alert('Please enter a symbol.'); return; }
+    const sl = parseFloat(manualSl);
+    const tp = parseFloat(manualTp);
+    if (!manualSl || !manualTp || isNaN(sl) || isNaN(tp)) { alert('Please enter valid SL and TP levels.'); return; }
+    
+    setManualTradeLoading(true);
+    try {
+      const headers = await getAuthHeaders();
+      const res = await fetch(`${BACKEND_URL}/api/trade/manual-open`, {
+        method: 'POST',
+        headers: { ...headers, 'X-Trade-Mode': tradeMode },
+        body: JSON.stringify({
+          market_type: marketEnv,
+          symbol: manualSymbol.trim().toUpperCase(),
+          direction: manualDirection,
+          quantity: parseFloat(manualQty) || 0,
+          stop_loss: sl,
+          take_profit: tp,
+          is_trailing: manualTrailing,
+          trailing_offset: parseFloat(manualTrailingOffset) || 0
+        })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        alert(`✅ ${manualDirection} order placed for ${manualSymbol.toUpperCase()}!\nEntry: ₹${data.data?.entry_price?.toFixed(2)} | Qty: ${data.data?.quantity}`);
+        setManualSymbol(''); setManualSl(''); setManualTp(''); setManualQty('');
+        loadData();
+      } else {
+        alert(`❌ Trade failed: ${data.detail || 'Unknown error'}`);
+      }
+    } catch (err: any) {
+      alert(`❌ Error placing trade: ${err.message}`);
+    } finally {
+      setManualTradeLoading(false);
+    }
+  };
+
+  const handleSmcSetup = async () => {
+    if (!manualSymbol.trim()) { alert('Please enter a symbol first.'); return; }
+    setSmcSetupLoading(true);
+    try {
+      const headers = await getAuthHeaders();
+      const res = await fetch(`${BACKEND_URL}/api/scan-asset?ticker=${encodeURIComponent(manualSymbol.trim())}&resolution=15m`, { headers });
+      const data = await res.json();
+      if (res.ok && data.status === 'success') {
+        const price = data.current_price;
+        const isBull = data.signal === 'BUY' || data.trend === 'BULLISH';
+        
+        // Calculate SL and TP from FVG zones and ATR approximation
+        const atr = price * 0.015; // ~1.5% ATR approximation
+        let suggestedSl: number, suggestedTp: number;
+        
+        if (isBull) {
+          const fvgParts = data.bullish_fvg !== 'None' ? data.bullish_fvg.split(' - ') : null;
+          suggestedSl = fvgParts ? parseFloat(fvgParts[0]) - atr * 0.3 : price - atr * 2;
+          suggestedTp = price + atr * 3;
+        } else {
+          const fvgParts = data.bearish_fvg !== 'None' ? data.bearish_fvg.split(' - ') : null;
+          suggestedSl = fvgParts ? parseFloat(fvgParts[1]) + atr * 0.3 : price + atr * 2;
+          suggestedTp = price - atr * 3;
+        }
+        
+        setManualDirection(data.signal === 'SELL' ? 'SELL' : 'BUY');
+        setManualSl(suggestedSl.toFixed(2));
+        setManualTp(suggestedTp.toFixed(2));
+        
+        if (data.signal === 'BUY' || data.signal === 'SELL') {
+          alert(`🎯 SMC Setup loaded!\nSignal: ${data.signal}\nSL: ₹${suggestedSl.toFixed(2)}\nTP: ₹${suggestedTp.toFixed(2)}\n\n${data.explanation?.slice(0, 200)}...`);
+        } else {
+          alert(`ℹ️ No active signal. Setup based on trend.\nSL: ₹${suggestedSl.toFixed(2)}\nTP: ₹${suggestedTp.toFixed(2)}`);
+        }
+      } else {
+        alert(`❌ Could not fetch SMC setup: ${data.detail || data.message || 'Scan failed'}`);
+      }
+    } catch (err: any) {
+      alert(`❌ SMC Setup error: ${err.message}`);
+    } finally {
+      setSmcSetupLoading(false);
+    }
+  };
+
+  const handleAdminApproveRequest = async (type: 'mock' | 'upgrade', requestId: string, userId: string, action: 'approve' | 'reject', tokenBalance?: number) => {
+    try {
+      const headers = await getAuthHeaders();
+      const endpoint = type === 'mock' ? '/api/admin/mock/approve' : '/api/admin/upgrade/approve';
+      const body: any = { request_id: requestId, user_id: userId, action };
+      if (type === 'upgrade' && tokenBalance) body.token_balance = tokenBalance;
+      
+      const res = await fetch(`${BACKEND_URL}${endpoint}`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body)
+      });
+      if (res.ok) {
+        alert(`✅ Request ${action}d successfully!`);
+        // Refresh admin insights
+        const insightsRes = await fetch(`${BACKEND_URL}/api/admin/insights`, { headers });
+        if (insightsRes.ok) {
+          const insightsData = await insightsRes.json();
+          setAdminInsights(insightsData);
+          setUserProfilesList(insightsData.user_profiles || []);
+        }
+      } else {
+        const err = await res.json();
+        alert(`❌ Failed: ${err.detail || 'Unknown error'}`);
+      }
+    } catch (err: any) {
+      alert(`❌ Error: ${err.message}`);
+    }
+  };
+
   // ── Custom Stock Scanner Trigger ──────────────────────────────────────────
   const runCustomScan = async (e?: React.FormEvent) => {
+
     if (e) e.preventDefault();
     if (!customScanTicker.trim()) return;
     setCustomScanLoading(true);
@@ -5342,116 +5483,507 @@ export default function Dashboard() {
             </>
           ) : (
             <>
-            {/* CUSTOM STOCK SCANNER */}
-            <div className="border border-slate-800 bg-[#070b15]/95 rounded-2xl p-4 shadow-2xl h-fit">
-              <div className="flex items-center justify-between border-b border-slate-800/80 pb-3 mb-4">
-                <div className="flex items-center gap-2">
-                  <span className="inline-block h-3 w-3 rounded-full bg-cyan-500" />
-                  <h2 className="text-xs font-bold font-mono tracking-widest text-slate-400 uppercase">FAST STOCK SCANNER</h2>
-                </div>
-                <span className="text-[10px] text-slate-500 font-mono">SMC Engine</span>
+            {/* ── 3-TAB CONTROL PANEL ─────────────────────────────────────── */}
+            <div className="border border-slate-800 bg-[#070b15]/95 rounded-2xl shadow-2xl h-fit overflow-hidden">
+              {/* Tab Header */}
+              <div className="flex border-b border-slate-800 bg-slate-950/50">
+                {[
+                  { id: 'SCANNER', label: '🔍 SMC Scanner', color: 'cyan' },
+                  { id: 'MANUAL', label: '⚡ Manual Trade', color: 'amber' },
+                  { id: 'ALGO', label: '🧬 Algo Strategies', color: 'violet' }
+                ].map(tab => (
+                  <button
+                    key={tab.id}
+                    onClick={() => setControlPanelTab(tab.id as any)}
+                    className={`flex-1 py-2.5 text-[9px] font-black tracking-widest font-mono transition-all cursor-pointer border-0 ${
+                      controlPanelTab === tab.id
+                        ? tab.color === 'cyan' ? 'text-cyan-400 bg-cyan-500/10 border-b-2 border-cyan-500'
+                          : tab.color === 'amber' ? 'text-amber-400 bg-amber-500/10 border-b-2 border-amber-500'
+                          : 'text-violet-400 bg-violet-500/10 border-b-2 border-violet-500'
+                        : 'text-slate-500 hover:text-slate-300 hover:bg-slate-900/30'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
               </div>
-  
-              {isTokenExpired ? (
-                <InlinePremiumUpgradeBlocker feature="Custom Stock Scanner" onRequestUpgrade={requestPremiumUpgrade} />
-              ) : (
-                <>
-                  <form onSubmit={runCustomScan} className="flex items-center gap-2 mb-4 font-mono">
-                    <div className="flex-1 relative flex items-center">
-                      <input
-                        type="text"
-                        placeholder="e.g. SBIN.NS, TCS.NS, GC=F"
-                        value={customScanTicker}
-                        onChange={(e) => setCustomScanTicker(e.target.value)}
-                        className="w-full bg-slate-900 border border-slate-800 rounded-xl pl-3 pr-14 py-2 text-xs font-bold text-slate-200 focus:outline-none focus:border-cyan-500 placeholder:text-slate-600 transition-colors"
-                      />
-                      {customScanTicker && (
+
+              <div className="p-4">
+                {/* ── TAB 1: SMC SCANNER ──────────────────────────────────── */}
+                {controlPanelTab === 'SCANNER' && (
+                  <div className="animate-fadeIn">
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="flex items-center gap-2">
+                        <span className="inline-block h-2.5 w-2.5 rounded-full bg-cyan-500 animate-pulse" />
+                        <h2 className="text-xs font-bold font-mono tracking-widest text-slate-400 uppercase">SMC Stock Scanner</h2>
+                      </div>
+                      <span className="text-[9px] text-slate-500 font-mono bg-slate-900/60 px-2 py-0.5 rounded border border-slate-800">LLM Powered</span>
+                    </div>
+
+                    {isTokenExpired ? (
+                      <InlinePremiumUpgradeBlocker feature="SMC Stock Scanner" onRequestUpgrade={requestPremiumUpgrade} />
+                    ) : (
+                      <>
+                        <form onSubmit={runCustomScan} className="flex items-center gap-2 mb-4 font-mono">
+                          <div className="flex-1 relative flex items-center">
+                            <input
+                              type="text"
+                              placeholder="e.g. SBIN.NS, TCS.NS, GC=F, NIFTY"
+                              value={customScanTicker}
+                              onChange={(e) => setCustomScanTicker(e.target.value)}
+                              className="w-full bg-slate-900 border border-slate-800 rounded-xl pl-3 pr-14 py-2 text-xs font-bold text-slate-200 focus:outline-none focus:border-cyan-500 placeholder:text-slate-600 transition-colors"
+                            />
+                            {customScanTicker && (
+                              <button
+                                type="button"
+                                onClick={() => { setCustomScanTicker(''); setCustomScanResult(null); }}
+                                className="absolute right-2 text-slate-500 hover:text-slate-300 font-bold text-[9px] uppercase tracking-wider bg-slate-950/40 hover:bg-slate-900 px-1.5 py-0.5 rounded cursor-pointer border-0"
+                              >
+                                Clear
+                              </button>
+                            )}
+                          </div>
+                          <button
+                            type="submit"
+                            disabled={customScanLoading}
+                            className="bg-cyan-500 hover:bg-cyan-600 text-slate-950 font-bold px-4 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-lg hover:shadow-cyan-500/20 active:scale-95 disabled:opacity-50 cursor-pointer"
+                          >
+                            {customScanLoading ? (
+                              <div className="h-3.5 w-3.5 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
+                            ) : 'SCAN'}
+                          </button>
+                        </form>
+
+                        {customScanResult && (
+                          <div className="bg-slate-900/60 p-3 rounded-xl border border-slate-850 font-mono text-[11px] animate-fadeIn relative">
+                            <button
+                              type="button"
+                              onClick={() => setCustomScanResult(null)}
+                              className="absolute top-2 right-2 text-slate-500 hover:text-rose-400 transition-colors font-bold text-[8px] tracking-wider uppercase bg-slate-950/40 hover:bg-rose-500/10 px-1.5 py-0.5 rounded cursor-pointer"
+                            >
+                              Clear
+                            </button>
+                            {customScanResult.status === 'success' ? (
+                              <div className="space-y-2">
+                                <div className="flex justify-between items-center pb-1 border-b border-slate-800/50">
+                                  <span className="font-bold text-slate-200">{customScanResult.ticker}</span>
+                                  <span className="text-[10px] text-slate-500">{customScanResult.timestamp}</span>
+                                </div>
+                                <div className="grid grid-cols-2 gap-2 text-[10px]">
+                                  <div>
+                                    <span className="text-slate-500 uppercase tracking-wider block">Price</span>
+                                    <span className="text-slate-200 font-bold">₹{customScanResult.current_price?.toFixed(2)}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-slate-500 uppercase tracking-wider block">Trend</span>
+                                    <span className={`font-bold ${customScanResult.trend === 'BULLISH' ? 'text-emerald-400' : 'text-rose-400'}`}>{customScanResult.trend}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-slate-500 uppercase tracking-wider block">Structure</span>
+                                    <span className="text-slate-300 font-semibold">{customScanResult.structure}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-slate-500 uppercase tracking-wider block">SMC Signal</span>
+                                    <span className={`font-black ${customScanResult.signal === 'BUY' ? 'text-emerald-400' : (customScanResult.signal === 'SELL' ? 'text-rose-400' : 'text-slate-400')}`}>
+                                      {customScanResult.signal}
+                                    </span>
+                                  </div>
+                                </div>
+                                {customScanResult.bullish_fvg && customScanResult.bullish_fvg !== 'None' && (
+                                  <div className="bg-emerald-950/20 p-2 rounded border border-emerald-900/30 text-[10px]">
+                                    <span className="text-emerald-400/80 font-bold block mb-0.5">Bullish FVG Zone</span>
+                                    <span className="text-emerald-300 font-bold">{customScanResult.bullish_fvg}</span>
+                                  </div>
+                                )}
+                                {customScanResult.bearish_fvg && customScanResult.bearish_fvg !== 'None' && (
+                                  <div className="bg-rose-950/20 p-2 rounded border border-rose-900/30 text-[10px]">
+                                    <span className="text-rose-400/80 font-bold block mb-0.5">Bearish FVG Zone</span>
+                                    <span className="text-rose-300 font-bold">{customScanResult.bearish_fvg}</span>
+                                  </div>
+                                )}
+                                {customScanResult.explanation && (
+                                  <p className="text-[10px] text-slate-400 border-t border-slate-800/40 pt-2 leading-relaxed">
+                                    {customScanResult.explanation}
+                                  </p>
+                                )}
+                                {/* Quick action: Use in Manual Trade */}
+                                {(customScanResult.signal === 'BUY' || customScanResult.signal === 'SELL') && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setManualSymbol(customScanResult.ticker || customScanTicker);
+                                      setControlPanelTab('MANUAL');
+                                      handleSmcSetup();
+                                    }}
+                                    className="w-full mt-1 py-1.5 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 rounded-lg text-[9px] font-bold tracking-widest transition-all cursor-pointer"
+                                  >
+                                    ⚡ OPEN MANUAL TRADE WITH THIS SIGNAL
+                                  </button>
+                                )}
+                              </div>
+                            ) : (
+                              <div className="text-rose-400 text-center py-2 flex items-center justify-center gap-1.5">
+                                <span>⚠️</span>
+                                <span>{customScanResult.message}</span>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
+
+                {/* ── TAB 2: MANUAL TRADE ─────────────────────────────────── */}
+                {controlPanelTab === 'MANUAL' && (
+                  <div className="animate-fadeIn font-mono">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-2">
+                        <span className="inline-block h-2.5 w-2.5 rounded-full bg-amber-500 animate-pulse" />
+                        <h2 className="text-xs font-bold tracking-widest text-slate-400 uppercase">Manual Order Entry</h2>
+                      </div>
+                      <span className={`text-[9px] font-bold px-2 py-0.5 rounded border ${tradeMode === 'MOCK' ? 'bg-cyan-500/10 text-cyan-400 border-cyan-500/30' : 'bg-rose-500/10 text-rose-400 border-rose-500/30 animate-pulse'}`}>
+                        {tradeMode} MODE
+                      </span>
+                    </div>
+                    
+                    {isTokenExpired ? (
+                      <InlinePremiumUpgradeBlocker feature="Manual Trade" onRequestUpgrade={requestPremiumUpgrade} />
+                    ) : tradeMode === 'MOCK' && !(userProfile?.subscription_status === 'active' || userProfile?.role === 'admin') && mockAccountSource !== 'MY' ? (
+                      <div className="bg-amber-950/20 border border-amber-500/20 rounded-xl p-4 text-center space-y-3">
+                        <span className="text-2xl">🔒</span>
+                        <p className="text-[11px] text-amber-400 font-bold">Mock Account Required</p>
+                        <p className="text-[10px] text-slate-500 leading-relaxed">You need an approved mock account to place manual trades. Request one via the MY MOCK button in the ledger.</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {/* Symbol + Direction */}
+                        <div className="grid grid-cols-3 gap-2">
+                          <div className="col-span-2">
+                            <label className="text-[8px] text-slate-500 uppercase tracking-widest block mb-1">Symbol</label>
+                            <input
+                              type="text"
+                              placeholder="e.g. ^NSEI, SBIN.NS"
+                              value={manualSymbol}
+                              onChange={(e) => setManualSymbol(e.target.value.toUpperCase())}
+                              className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-amber-500 placeholder:text-slate-600 transition-colors"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[8px] text-slate-500 uppercase tracking-widest block mb-1">Direction</label>
+                            <div className="flex rounded-lg overflow-hidden border border-slate-800">
+                              <button
+                                type="button"
+                                onClick={() => setManualDirection('BUY')}
+                                className={`flex-1 py-1.5 text-[9px] font-black transition-all cursor-pointer ${manualDirection === 'BUY' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-900 text-slate-500 hover:text-slate-300'}`}
+                              >
+                                BUY
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setManualDirection('SELL')}
+                                className={`flex-1 py-1.5 text-[9px] font-black transition-all cursor-pointer ${manualDirection === 'SELL' ? 'bg-rose-500/20 text-rose-400' : 'bg-slate-900 text-slate-500 hover:text-slate-300'}`}
+                              >
+                                SELL
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* SMC Auto-Setup Button */}
                         <button
                           type="button"
-                          onClick={() => {
-                            setCustomScanTicker('');
-                            setCustomScanResult(null);
-                          }}
-                          className="absolute right-2 text-slate-500 hover:text-slate-300 font-bold text-[9px] uppercase tracking-wider bg-slate-950/40 hover:bg-slate-900 px-1.5 py-0.5 rounded cursor-pointer border-0"
+                          onClick={handleSmcSetup}
+                          disabled={smcSetupLoading || !manualSymbol.trim()}
+                          className="w-full py-1.5 bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 rounded-lg text-[9px] font-bold tracking-widest transition-all cursor-pointer disabled:opacity-50 flex items-center justify-center gap-1.5"
                         >
-                          Clear
+                          {smcSetupLoading ? (
+                            <><span className="animate-spin rounded-full h-2.5 w-2.5 border-t border-b border-cyan-400" /> ANALYZING SMC...</>
+                          ) : (
+                            '🎯 AUTO-SETUP SL/TP FROM SMC ANALYSIS'
+                          )}
                         </button>
-                      )}
-                    </div>
-                    <button
-                      type="submit"
-                      disabled={customScanLoading}
-                      className="bg-cyan-500 hover:bg-cyan-600 text-slate-950 font-bold px-4 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-lg hover:shadow-cyan-500/20 active:scale-95 disabled:opacity-50 cursor-pointer"
-                    >
-                      {customScanLoading ? (
-                        <div className="h-3.5 w-3.5 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
-                      ) : 'SCAN'}
-                    </button>
-                  </form>
-  
-                  {customScanResult && (
-                    <div className="bg-slate-900/60 p-3 rounded-xl border border-slate-850 font-mono text-[11px] animate-fadeIn relative">
-                      <button
-                        type="button"
-                        onClick={() => setCustomScanResult(null)}
-                        className="absolute top-2 right-2 text-slate-500 hover:text-rose-450 transition-colors font-bold text-[8px] tracking-wider uppercase bg-slate-950/40 hover:bg-rose-500/10 px-1.5 py-0.5 rounded cursor-pointer"
-                      >
-                        Clear
-                      </button>
-                      {customScanResult.status === 'success' ? (
-                        <div className="space-y-2">
-                          <div className="flex justify-between items-center pb-1 border-b border-slate-800/50">
-                            <span className="font-bold text-slate-200">{customScanResult.ticker}</span>
-                            <span className="text-[10px] text-slate-500">{customScanResult.timestamp}</span>
+
+                        {/* SL / TP Row */}
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="text-[8px] text-rose-400 uppercase tracking-widest block mb-1">Stop Loss ▼</label>
+                            <input
+                              type="number"
+                              step="0.01"
+                              placeholder="SL Level"
+                              value={manualSl}
+                              onChange={(e) => setManualSl(e.target.value)}
+                              className="w-full bg-rose-950/10 border border-rose-500/20 rounded-lg px-2.5 py-1.5 text-xs text-rose-300 focus:outline-none focus:border-rose-500 placeholder:text-rose-900 transition-colors"
+                            />
                           </div>
-                          <div className="grid grid-cols-2 gap-2 text-[10px]">
-                            <div>
-                              <span className="text-slate-500 uppercase tracking-wider block">Price</span>
-                              <span className="text-slate-200 font-bold">₹{customScanResult.current_price.toFixed(2)}</span>
-                            </div>
-                            <div>
-                              <span className="text-slate-500 uppercase tracking-wider block">Trend</span>
-                              <span className={`font-bold ${customScanResult.trend === 'BULLISH' ? 'text-emerald-400' : 'text-rose-400'}`}>{customScanResult.trend}</span>
-                            </div>
-                            <div>
-                              <span className="text-slate-500 uppercase tracking-wider block">Structure</span>
-                              <span className="text-slate-300 font-semibold">{customScanResult.structure}</span>
-                            </div>
-                            <div>
-                              <span className="text-slate-500 uppercase tracking-wider block">SMC Signal</span>
-                              <span className={`font-black ${customScanResult.signal === 'BUY' ? 'text-emerald-400' : (customScanResult.signal === 'SELL' ? 'text-rose-400' : 'text-slate-400')}`}>
-                                {customScanResult.signal}
+                          <div>
+                            <label className="text-[8px] text-emerald-400 uppercase tracking-widest block mb-1">Take Profit ▲</label>
+                            <input
+                              type="number"
+                              step="0.01"
+                              placeholder="TP Level"
+                              value={manualTp}
+                              onChange={(e) => setManualTp(e.target.value)}
+                              className="w-full bg-emerald-950/10 border border-emerald-500/20 rounded-lg px-2.5 py-1.5 text-xs text-emerald-300 focus:outline-none focus:border-emerald-500 placeholder:text-emerald-900 transition-colors"
+                            />
+                          </div>
+                        </div>
+
+                        {/* Qty + Trailing */}
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="text-[8px] text-slate-500 uppercase tracking-widest block mb-1">Quantity (lots)</label>
+                            <input
+                              type="number"
+                              step="1"
+                              placeholder="1"
+                              value={manualQty}
+                              onChange={(e) => setManualQty(e.target.value)}
+                              className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-amber-500 placeholder:text-slate-600 transition-colors"
+                            />
+                          </div>
+                          <div className="flex flex-col justify-end">
+                            <label className="flex items-center gap-1.5 cursor-pointer pb-1.5">
+                              <input
+                                type="checkbox"
+                                checked={manualTrailing}
+                                onChange={(e) => setManualTrailing(e.target.checked)}
+                                className="rounded accent-amber-500 cursor-pointer"
+                              />
+                              <span className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">Trailing SL</span>
+                            </label>
+                            {manualTrailing && (
+                              <input
+                                type="number"
+                                step="0.01"
+                                placeholder="Offset pts"
+                                value={manualTrailingOffset}
+                                onChange={(e) => setManualTrailingOffset(e.target.value)}
+                                className="w-full bg-slate-900 border border-amber-500/30 rounded-lg px-2.5 py-1.5 text-xs text-amber-300 focus:outline-none focus:border-amber-500 placeholder:text-slate-600 transition-colors"
+                              />
+                            )}
+                          </div>
+                        </div>
+
+                        {/* SL/TP Risk Display */}
+                        {manualSl && manualTp && (
+                          <div className="bg-slate-900/50 rounded-lg p-2 border border-slate-800/50 text-[9px] font-mono">
+                            <div className="flex justify-between mb-1">
+                              <span className="text-slate-500">Risk:Reward</span>
+                              <span className="text-slate-300 font-bold">
+                                {(() => {
+                                  const sl = parseFloat(manualSl);
+                                  const tp = parseFloat(manualTp);
+                                  const price = liveSpotPrice;
+                                  const risk = Math.abs(price - sl);
+                                  const reward = Math.abs(tp - price);
+                                  return risk > 0 ? `1:${(reward / risk).toFixed(1)}` : '—';
+                                })()}
                               </span>
                             </div>
+                            <div className="flex justify-between">
+                              <span className="text-rose-400">SL: ₹{parseFloat(manualSl).toFixed(2)}</span>
+                              <span className="text-emerald-400">TP: ₹{parseFloat(manualTp).toFixed(2)}</span>
+                            </div>
                           </div>
-                          {customScanResult.bullish_fvg !== 'None' && (
-                            <div className="bg-emerald-950/20 p-2 rounded border border-emerald-900/30 text-[10px]">
-                              <span className="text-emerald-400/80 font-bold block mb-0.5">Bullish FVG Zone</span>
-                              <span className="text-emerald-300 font-bold">{customScanResult.bullish_fvg}</span>
-                            </div>
-                          )}
-                          {customScanResult.bearish_fvg !== 'None' && (
-                            <div className="bg-rose-950/20 p-2 rounded border border-rose-900/30 text-[10px]">
-                              <span className="text-rose-400/80 font-bold block mb-0.5">Bearish FVG Zone</span>
-                              <span className="text-rose-300 font-bold">{customScanResult.bearish_fvg}</span>
-                            </div>
-                          )}
-                          <p className="text-[10px] text-slate-400 border-t border-slate-800/40 pt-2 leading-relaxed">
-                            {customScanResult.explanation}
-                          </p>
-                        </div>
-                      ) : (
-                        <div className="text-rose-400 text-center py-2 flex items-center justify-center gap-1.5">
-                          <span>⚠️</span>
-                          <span>{customScanResult.message}</span>
-                        </div>
-                      )}
+                        )}
+
+                        {/* Place Order Button */}
+                        <button
+                          type="button"
+                          onClick={handleManualOpenTrade}
+                          disabled={manualTradeLoading || !manualSymbol || !manualSl || !manualTp}
+                          className={`w-full py-2.5 rounded-xl font-black text-xs tracking-widest transition-all active:scale-95 disabled:opacity-50 cursor-pointer shadow-lg ${
+                            manualDirection === 'BUY'
+                              ? 'bg-emerald-500 hover:bg-emerald-600 text-slate-950 shadow-emerald-500/20'
+                              : 'bg-rose-500 hover:bg-rose-600 text-white shadow-rose-500/20'
+                          }`}
+                        >
+                          {manualTradeLoading ? (
+                            <span className="flex items-center justify-center gap-2">
+                              <span className="animate-spin rounded-full h-3.5 w-3.5 border-t-2 border-b-2 border-current" />
+                              PLACING ORDER...
+                            </span>
+                          ) : `${manualDirection === 'BUY' ? '📈 BUY' : '📉 SELL'} ${manualSymbol || '—'} | ${tradeMode}`}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* ── TAB 3: ALGO STRATEGIES ──────────────────────────────── */}
+                {controlPanelTab === 'ALGO' && (
+                  <div className="animate-fadeIn font-mono">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-2">
+                        <span className="inline-block h-2.5 w-2.5 rounded-full bg-violet-500 animate-pulse" />
+                        <h2 className="text-xs font-bold tracking-widest text-slate-400 uppercase">Algo Strategy Lab</h2>
+                      </div>
+                      <span className="text-[9px] text-slate-500 bg-slate-900/60 px-2 py-0.5 rounded border border-slate-800">5 Presets + Custom</span>
                     </div>
-                  )}
-                </>
-              )}
+
+                    {isTokenExpired ? (
+                      <InlinePremiumUpgradeBlocker feature="Algo Strategies" onRequestUpgrade={requestPremiumUpgrade} />
+                    ) : (
+                      <div className="space-y-3">
+                        {/* 5 preset strategies */}
+                        {[
+                          {
+                            id: 'ORB',
+                            name: '📊 Opening Range Breakout',
+                            desc: 'Trade the 9:15–9:30 AM candle range. Enter on breakout with FVG confirmation.',
+                            sl: '0.5% below ORB low (BUY) or above ORB high (SELL)',
+                            tp: '2× ORB range projected from breakout point',
+                            timeframe: '5m candle close',
+                            tag: 'INTRADAY',
+                            color: 'cyan'
+                          },
+                          {
+                            id: 'OB_MITIGATION',
+                            name: '🧱 Order Block Mitigation',
+                            desc: 'Wait for price to retrace into an SMC Order Block after a BOS/CHoCH. Enter at OB 50% level.',
+                            sl: '3–5 pts below OB low (BUY OB) or above OB high (SELL OB)',
+                            tp: '1.5–2× risk to next liquidity pool',
+                            timeframe: '15m / 1H confirmation',
+                            tag: 'SMC CORE',
+                            color: 'amber'
+                          },
+                          {
+                            id: 'FVG_RETRACEMENT',
+                            name: '🕳️ FVG Retracement',
+                            desc: 'Price creates a Fair Value Gap (imbalance). Enter when price returns to fill 50% of the FVG.',
+                            sl: 'Below FVG low (for BUY FVG)',
+                            tp: 'Previous swing high / resistance',
+                            timeframe: '15m with 1H trend bias',
+                            tag: 'HIGH PROB',
+                            color: 'emerald'
+                          },
+                          {
+                            id: 'EMA_CROSS',
+                            name: '📈 EMA 20/50 Crossover',
+                            desc: 'Golden cross of EMA20 above EMA50 confirms bullish momentum. Enter on the retest of EMA20.',
+                            sl: 'Below EMA50 at entry candle',
+                            tp: 'Previous ATH or 2× risk target',
+                            timeframe: '1H / Daily',
+                            tag: 'MOMENTUM',
+                            color: 'blue'
+                          },
+                          {
+                            id: 'TREND_PULLBACK',
+                            name: '🌊 Trend Pullback (HH/HL)',
+                            desc: 'In a confirmed uptrend (HH+HL), enter pullbacks to the 0.5–0.618 Fibonacci zone near OB.',
+                            sl: 'Below the most recent HL swing',
+                            tp: 'Next swing high / FVG above',
+                            timeframe: '1H with 4H trend bias',
+                            tag: 'TREND FOLLOW',
+                            color: 'violet'
+                          }
+                        ].map(strategy => (
+                          <div
+                            key={strategy.id}
+                            className={`rounded-xl border transition-all cursor-pointer ${
+                              algoActiveStrategy === strategy.id
+                                ? strategy.color === 'cyan' ? 'border-cyan-500/60 bg-cyan-950/20'
+                                  : strategy.color === 'amber' ? 'border-amber-500/60 bg-amber-950/20'
+                                  : strategy.color === 'emerald' ? 'border-emerald-500/60 bg-emerald-950/20'
+                                  : strategy.color === 'blue' ? 'border-blue-500/60 bg-blue-950/20'
+                                  : 'border-violet-500/60 bg-violet-950/20'
+                                : 'border-slate-800 bg-slate-900/20 hover:border-slate-700'
+                            }`}
+                            onClick={() => setAlgoActiveStrategy(algoActiveStrategy === strategy.id ? null : strategy.id)}
+                          >
+                            <div className="flex items-center justify-between p-3">
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[10px] font-black text-slate-200">{strategy.name}</span>
+                                  <span className={`text-[7px] font-black px-1.5 py-0.5 rounded ${
+                                    strategy.color === 'cyan' ? 'bg-cyan-500/20 text-cyan-400'
+                                    : strategy.color === 'amber' ? 'bg-amber-500/20 text-amber-400'
+                                    : strategy.color === 'emerald' ? 'bg-emerald-500/20 text-emerald-400'
+                                    : strategy.color === 'blue' ? 'bg-blue-500/20 text-blue-400'
+                                    : 'bg-violet-500/20 text-violet-400'
+                                  }`}>{strategy.tag}</span>
+                                </div>
+                                <p className="text-[9px] text-slate-500 mt-0.5 leading-relaxed">{strategy.desc}</p>
+                              </div>
+                              <span className="text-slate-500 text-xs ml-2 flex-shrink-0">{algoActiveStrategy === strategy.id ? '▼' : '▶'}</span>
+                            </div>
+
+                            {algoActiveStrategy === strategy.id && (
+                              <div className="px-3 pb-3 space-y-2 border-t border-slate-800/50 pt-2 animate-fadeIn">
+                                <div className="grid grid-cols-1 gap-1 text-[9px]">
+                                  <div className="flex gap-2">
+                                    <span className="text-rose-400 font-bold w-16 flex-shrink-0">SL RULE:</span>
+                                    <span className="text-slate-300">{strategy.sl}</span>
+                                  </div>
+                                  <div className="flex gap-2">
+                                    <span className="text-emerald-400 font-bold w-16 flex-shrink-0">TP RULE:</span>
+                                    <span className="text-slate-300">{strategy.tp}</span>
+                                  </div>
+                                  <div className="flex gap-2">
+                                    <span className="text-cyan-400 font-bold w-16 flex-shrink-0">TIMEFRAME:</span>
+                                    <span className="text-slate-300">{strategy.timeframe}</span>
+                                  </div>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setControlPanelTab('MANUAL');
+                                    alert(`📋 Strategy "${strategy.name}" loaded!\n\nApply the SL/TP rules below when entering your trade:\n\nSL: ${strategy.sl}\nTP: ${strategy.tp}\nTimeframe: ${strategy.timeframe}`);
+                                  }}
+                                  className="w-full py-1.5 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 rounded-lg text-[9px] font-bold tracking-widest transition-all cursor-pointer"
+                                >
+                                  ⚡ USE IN MANUAL TRADE
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+
+                        {/* Custom Strategy Builder */}
+                        <div className="border border-dashed border-violet-500/30 bg-violet-950/10 rounded-xl p-3">
+                          <div className="flex items-center gap-1.5 mb-2">
+                            <span className="text-[10px] font-black text-violet-400">🔬 Custom Strategy Builder</span>
+                            <span className="text-[7px] text-violet-500 bg-violet-500/10 px-1.5 py-0.5 rounded font-bold">EXPERIMENTAL</span>
+                          </div>
+                          <p className="text-[9px] text-slate-500 mb-2 leading-relaxed">Define your own strategy rules in JSON. The system will use this as context when auto-placing trades.</p>
+                          <textarea
+                            value={customStrategyJson}
+                            onChange={(e) => {
+                              setCustomStrategyJson(e.target.value);
+                              try { JSON.parse(e.target.value); setCustomStrategyValid(true); }
+                              catch { setCustomStrategyValid(false); }
+                            }}
+                            rows={7}
+                            className={`w-full bg-slate-950 border ${customStrategyValid ? 'border-slate-800' : 'border-rose-500/60'} rounded-lg px-2.5 py-2 text-[10px] text-slate-300 font-mono focus:outline-none focus:border-violet-500 transition-colors resize-none`}
+                          />
+                          {!customStrategyValid && <p className="text-[9px] text-rose-400 mt-1">⚠️ Invalid JSON</p>}
+                          <button
+                            type="button"
+                            disabled={!customStrategyValid || algoStrategyDeployLoading}
+                            onClick={async () => {
+                              setAlgoStrategyDeployLoading(true);
+                              try {
+                                const parsed = JSON.parse(customStrategyJson);
+                                alert(`✅ Strategy "${parsed.name}" saved to session!\n\nYour custom strategy rules will be used in the next SMC setup auto-fill.`);
+                              } catch {}
+                              finally { setAlgoStrategyDeployLoading(false); }
+                            }}
+                            className="w-full mt-2 py-1.5 bg-violet-500/10 hover:bg-violet-500/20 text-violet-400 border border-violet-500/30 rounded-lg text-[9px] font-bold tracking-widest transition-all cursor-pointer disabled:opacity-50"
+                          >
+                            {algoStrategyDeployLoading ? 'SAVING...' : '💾 SAVE CUSTOM STRATEGY'}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
             
+
             {/* ACTIVE TRADES (Current Ledger) - Always visible, fully expanded by default */}
             <div className="border border-slate-800 bg-[#070b15]/95 rounded-2xl p-4 shadow-2xl h-fit">
               <div className="flex flex-col gap-2.5 border-b border-slate-800/80 pb-3 mb-4">
@@ -6135,324 +6667,488 @@ export default function Dashboard() {
                 LOADING COMMAND METRICS...
               </div>
             ) : adminInsights ? (
-              <div className="space-y-6 text-xs text-slate-400">
-                {/* Stats row */}
-                <div className="grid grid-cols-3 gap-4">
-                  <div className="bg-slate-900/50 p-4 border border-slate-850 rounded-2xl">
-                    <span className="text-[9px] uppercase tracking-widest text-slate-500">Total Scans & Chats</span>
-                    <span className="block text-2xl font-black text-slate-100 mt-1">{adminInsights.total_queries}</span>
-                  </div>
-                  <div className="bg-slate-900/50 p-4 border border-slate-850 rounded-2xl">
-                    <span className="text-[9px] uppercase tracking-widest text-slate-500">SMC Stock Scans</span>
-                    <span className="block text-2xl font-black text-cyan-400 mt-1">{adminInsights.total_scans}</span>
-                  </div>
-                  <div className="bg-slate-900/50 p-4 border border-slate-850 rounded-2xl">
-                    <span className="text-[9px] uppercase tracking-widest text-slate-500">AI Chat Sessions</span>
-                    <span className="block text-2xl font-black text-purple-400 mt-1">{adminInsights.total_chats}</span>
-                  </div>
-                </div>
-
-                {/* Live vs Mock Comparative Metrics */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {/* Live Account Metrics */}
-                  <div className="bg-rose-950/10 p-4 border border-rose-500/20 rounded-2xl">
-                    <span className="text-[9px] uppercase tracking-widest text-rose-400 font-bold block mb-3 font-mono">Live Trading Metrics</span>
-                    <div className="space-y-2 font-mono text-[10px]">
-                      <div className="flex justify-between border-b border-slate-850/30 pb-1">
-                        <span className="text-slate-500">Total Live Trades:</span>
-                        <span className="font-bold text-slate-200">{adminInsights.live_trades_count || 0}</span>
-                      </div>
-                      <div className="flex justify-between border-b border-slate-850/30 pb-1">
-                        <span className="text-slate-500">Live Realized P&L:</span>
-                        <span className={`font-bold ${(adminInsights.live_pnl || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                          ₹{(adminInsights.live_pnl || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              <div className="space-y-4 text-xs text-slate-400">
+                {/* Admin Sub-Tabs */}
+                <div className="flex gap-1 bg-slate-950/60 p-1 rounded-xl border border-slate-800">
+                  {[
+                    { id: 'USERS', label: '👥 Users', badge: userProfilesList.length },
+                    { id: 'MOCK_REQ', label: '🔵 Mock Requests', badge: adminInsights.pending_mock_requests?.length || 0, pulse: (adminInsights.pending_mock_requests?.length || 0) > 0 },
+                    { id: 'UPGRADE_REQ', label: '⭐ Upgrade Req', badge: adminInsights.pending_upgrade_requests?.length || 0, pulse: (adminInsights.pending_upgrade_requests?.length || 0) > 0 },
+                    { id: 'LOGS', label: '📊 Metrics', badge: null },
+                    { id: 'SETTINGS', label: '⚙️ Settings', badge: null }
+                  ].map(tab => (
+                    <button
+                      key={tab.id}
+                      onClick={() => setAdminSubTab(tab.id as any)}
+                      className={`flex-1 py-1.5 px-2 rounded-lg text-[9px] font-bold tracking-widest transition-all cursor-pointer relative ${
+                        adminSubTab === tab.id
+                          ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/30'
+                          : 'text-slate-500 hover:text-slate-300 hover:bg-slate-900/30'
+                      }`}
+                    >
+                      {tab.label}
+                      {tab.badge !== null && tab.badge > 0 && (
+                        <span className={`absolute -top-1 -right-1 h-4 w-4 rounded-full text-[7px] flex items-center justify-center font-black ${tab.pulse ? 'bg-amber-500 text-slate-950 animate-pulse' : 'bg-slate-700 text-slate-300'}`}>
+                          {tab.badge}
                         </span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-slate-500">Active Integrations:</span>
-                        <span className="font-bold text-cyan-400">{adminInsights.active_integrations_count || 0}</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Mock Account Metrics */}
-                  <div className="bg-cyan-950/10 p-4 border border-cyan-500/20 rounded-2xl">
-                    <span className="text-[9px] uppercase tracking-widest text-cyan-400 font-bold block mb-3 font-mono">Mock Trading Metrics</span>
-                    <div className="space-y-2 font-mono text-[10px]">
-                      <div className="flex justify-between border-b border-slate-850/30 pb-1">
-                        <span className="text-slate-500">Total Mock Trades:</span>
-                        <span className="font-bold text-slate-200">{adminInsights.mock_trades_count || 0}</span>
-                      </div>
-                      <div className="flex justify-between border-b border-slate-850/30 pb-1">
-                        <span className="text-slate-500">Mock Realized P&L:</span>
-                        <span className={`font-bold ${(adminInsights.mock_pnl || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                          ₹{(adminInsights.mock_pnl || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                        </span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-slate-500">Paper Accounts:</span>
-                        <span className="font-bold text-slate-400">Unlimited Active</span>
-                      </div>
-                    </div>
-                  </div>
+                      )}
+                    </button>
+                  ))}
                 </div>
 
-                {/* Top users and symbols */}
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="bg-slate-900/30 p-4 border border-slate-850 rounded-2xl">
-                    <span className="text-[9px] uppercase tracking-widest text-slate-500 block mb-2">Most Active Users</span>
-                    <ul className="space-y-1.5 font-bold">
-                      {adminInsights.top_users?.map((u: any, idx: number) => (
-                        <li key={idx} className="flex justify-between border-b border-slate-850/50 pb-1">
-                          <span>{u.email}</span>
-                          <span className="text-cyan-400">{u.queries} hits</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                  <div className="bg-slate-900/30 p-4 border border-slate-850 rounded-2xl">
-                    <span className="text-[9px] uppercase tracking-widest text-slate-500 block mb-2">Trending Queries</span>
-                    <ul className="space-y-1.5 font-bold">
-                      {adminInsights.top_symbols?.map((s: any, idx: number) => (
-                        <li key={idx} className="flex justify-between border-b border-slate-850/50 pb-1">
-                          <span>{s.symbol}</span>
-                          <span className="text-amber-400">{s.count} scans</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                </div>
-
-                {/* Users List & Access Control */}
-                <div className="bg-slate-900/30 p-4 border border-slate-850 rounded-2xl">
-                  <span className="text-[9px] uppercase tracking-widest text-slate-500 block mb-3">User Profiles & Subscriptions</span>
-                  <div className="overflow-x-auto max-h-60 overflow-y-auto">
-                    <table className="w-full text-left border-collapse text-[10px]">
-                      <thead>
-                        <tr className="border-b border-slate-800 text-slate-500 uppercase tracking-widest text-[8px]">
-                          <th className="py-2 px-2">User Email</th>
-                          <th className="py-2 px-2">Role</th>
-                          <th className="py-2 px-2">Status</th>
-                          <th className="py-2 px-2">Tokens Remaining</th>
-                          <th className="py-2 px-2 text-right">Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {userProfilesList.filter((p: any) => p.token_balance >= 0).map((p: any) => (
-                          <tr key={p.id} className="border-b border-slate-850/50 hover:bg-slate-900/20">
-                            <td className="py-2 px-2 text-slate-200 font-bold">{p.email}</td>
-                            <td className="py-2 px-2 text-slate-400">{p.role}</td>
-                            <td className="py-2 px-2">
-                              <span className={`px-1.5 py-0.5 rounded font-black ${
-                                p.subscription_status === 'active' 
-                                  ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
-                                  : p.subscription_status === 'pending_approval' 
-                                  ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20 animate-pulse'
-                                  : 'bg-slate-500/10 text-slate-400 border border-slate-500/20'
-                              }`}>
-                                {p.subscription_status}
-                              </span>
-                            </td>
-                            <td className="py-2 px-2 text-slate-300">{p.token_balance}</td>
-                            <td className="py-2 px-2 text-right space-x-1.5">
-                              {p.subscription_status !== 'active' && (
-                                <button
-                                  type="button"
-                                  onClick={() => handleUpdateUserProfile(p.id, 'active', 999999)}
-                                  className="bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25 px-1.5 py-0.5 rounded text-[8px] font-bold cursor-pointer"
-                                >
-                                  APPROVE
-                                </button>
-                              )}
-                              {p.subscription_status === 'active' && (
-                                <button
-                                  type="button"
-                                  onClick={() => handleUpdateUserProfile(p.id, 'free', 100)}
-                                  className="bg-rose-500/15 text-rose-400 border border-rose-500/30 hover:bg-rose-500/25 px-1.5 py-0.5 rounded text-[8px] font-bold cursor-pointer"
-                                >
-                                  REVOKE
-                                </button>
-                              )}
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const tokensStr = prompt("Set token balance:", String(p.token_balance));
-                                  if (tokensStr !== null) {
-                                    const tokens = parseInt(tokensStr);
-                                    if (!isNaN(tokens)) {
-                                      handleUpdateUserProfile(p.id, p.subscription_status, tokens);
-                                    }
-                                  }
-                                }}
-                                className="bg-cyan-500/15 text-cyan-400 border border-cyan-500/30 hover:bg-cyan-500/25 px-1.5 py-0.5 rounded text-[8px] font-bold cursor-pointer"
-                              >
-                                EDIT TOKENS
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => loadUserWatchlist(p.id)}
-                                className="bg-purple-500/15 text-purple-400 border border-purple-500/30 hover:bg-purple-500/25 px-1.5 py-0.5 rounded text-[8px] font-bold cursor-pointer"
-                              >
-                                WATCHLIST
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteUserProfile(p.id)}
-                                className="bg-rose-500/15 text-rose-400 border border-rose-500/30 hover:bg-rose-500/25 px-1.5 py-0.5 rounded text-[8px] font-bold cursor-pointer"
-                              >
-                                DELETE
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-
-                {/* Watchlist Inspection Panel */}
-                {selectedWatchlistUserId && (
-                  <div className="bg-purple-950/10 border border-purple-500/20 rounded-2xl p-4 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[9px] uppercase tracking-widest text-purple-400 font-bold">
-                        📦 Watchlist for {userProfilesList.find(p => p.id === selectedWatchlistUserId)?.email || 'Selected User'}
-                      </span>
-                      <button
-                        onClick={() => setSelectedWatchlistUserId(null)}
-                        className="text-slate-500 hover:text-slate-300 text-[10px] font-bold cursor-pointer"
-                      >
-                        ✕ CLOSE PANEL
-                      </button>
+                {/* ── USERS TAB ─────────────────────────────────────────────── */}
+                {adminSubTab === 'USERS' && (
+                  <div className="space-y-4 animate-fadeIn">
+                    {/* Stats row */}
+                    <div className="grid grid-cols-3 gap-4">
+                      <div className="bg-slate-900/50 p-4 border border-slate-850 rounded-2xl">
+                        <span className="text-[9px] uppercase tracking-widest text-slate-500">Total Users</span>
+                        <span className="block text-2xl font-black text-slate-100 mt-1">{userProfilesList.length}</span>
+                      </div>
+                      <div className="bg-slate-900/50 p-4 border border-slate-850 rounded-2xl">
+                        <span className="text-[9px] uppercase tracking-widest text-slate-500">Active Subs</span>
+                        <span className="block text-2xl font-black text-emerald-400 mt-1">{userProfilesList.filter((p: any) => p.subscription_status === 'active').length}</span>
+                      </div>
+                      <div className="bg-slate-900/50 p-4 border border-slate-850 rounded-2xl">
+                        <span className="text-[9px] uppercase tracking-widest text-slate-500">Pending Approvals</span>
+                        <span className="block text-2xl font-black text-amber-400 mt-1">{userProfilesList.filter((p: any) => p.subscription_status === 'pending_approval').length}</span>
+                      </div>
                     </div>
 
-                    {selectedUserWatchlistLoading ? (
-                      <div className="flex justify-center items-center py-6 text-purple-400 font-bold">
-                        <span className="animate-spin rounded-full h-4 w-4 border-t border-b border-purple-500 mr-2" />
-                        RETRIEVING WATCHLIST...
-                      </div>
-                    ) : selectedUserWatchlist.length === 0 ? (
-                      <div className="text-center py-6 text-slate-500 italic">
-                        No watchlisted assets for this user.
-                      </div>
-                    ) : (
-                      <div className="overflow-x-auto">
+                    {/* Users Table */}
+                    <div className="bg-slate-900/30 p-4 border border-slate-850 rounded-2xl">
+                      <span className="text-[9px] uppercase tracking-widest text-slate-500 block mb-3">User Profiles & Subscriptions</span>
+                      <div className="overflow-x-auto max-h-72 overflow-y-auto">
                         <table className="w-full text-left border-collapse text-[10px]">
                           <thead>
                             <tr className="border-b border-slate-800 text-slate-500 uppercase tracking-widest text-[8px]">
-                              <th className="py-2 px-2">Symbol</th>
-                              <th className="py-2 px-2">Name</th>
-                              <th className="py-2 px-2">LTP</th>
-                              <th className="py-2 px-2">Stop Loss</th>
-                              <th className="py-2 px-2">Target 1</th>
-                              <th className="py-2 px-2">Target 2</th>
-                              <th className="py-2 px-2 text-right">Added At</th>
+                              <th className="py-2 px-2">User Email</th>
+                              <th className="py-2 px-2">Role</th>
+                              <th className="py-2 px-2">Status</th>
+                              <th className="py-2 px-2">Tokens</th>
+                              <th className="py-2 px-2 text-right">Actions</th>
                             </tr>
                           </thead>
                           <tbody>
-                            {selectedUserWatchlist.map((item: any) => (
-                              <tr key={item.id} className="border-b border-slate-850/50 hover:bg-purple-900/10">
-                                <td className="py-2 px-2 font-bold text-slate-200">{item.symbol}</td>
-                                <td className="py-2 px-2 text-slate-400">{item.name}</td>
-                                <td className="py-2 px-2 text-cyan-400 font-bold">₹{item.price ? item.price.toFixed(2) : '-'}</td>
-                                <td className="py-2 px-2 text-rose-400 font-semibold">₹{item.stop_loss ? item.stop_loss.toFixed(2) : '-'}</td>
-                                <td className="py-2 px-2 text-emerald-400 font-semibold">₹{item.target_1 ? item.target_1.toFixed(2) : '-'}</td>
-                                <td className="py-2 px-2 text-emerald-400 font-semibold">₹{item.target_2 ? item.target_2.toFixed(2) : '-'}</td>
-                                <td className="py-2 px-2 text-right text-slate-500">
-                                  {item.added_at ? new Date(item.added_at).toLocaleDateString() : '-'}
+                            {userProfilesList.map((p: any) => (
+                              <tr key={p.id} className="border-b border-slate-850/50 hover:bg-slate-900/20">
+                                <td className="py-2 px-2 text-slate-200 font-bold">{p.email}</td>
+                                <td className="py-2 px-2 text-slate-400">{p.role}</td>
+                                <td className="py-2 px-2">
+                                  <span className={`px-1.5 py-0.5 rounded font-black ${
+                                    p.subscription_status === 'active' 
+                                      ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
+                                      : p.subscription_status === 'pending_approval' 
+                                      ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20 animate-pulse'
+                                      : p.subscription_status === 'blocked'
+                                      ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                                      : 'bg-slate-500/10 text-slate-400 border border-slate-500/20'
+                                  }`}>
+                                    {p.subscription_status}
+                                  </span>
+                                </td>
+                                <td className="py-2 px-2 text-slate-300 font-mono">{p.token_balance}</td>
+                                <td className="py-2 px-2 text-right space-x-1.5">
+                                  {p.subscription_status !== 'active' && p.role !== 'admin' && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleUpdateUserProfile(p.id, 'active', 500)}
+                                      className="bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25 px-1.5 py-0.5 rounded text-[8px] font-bold cursor-pointer"
+                                    >
+                                      APPROVE
+                                    </button>
+                                  )}
+                                  {p.subscription_status === 'active' && p.role !== 'admin' && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleUpdateUserProfile(p.id, 'free', 100)}
+                                      className="bg-rose-500/15 text-rose-400 border border-rose-500/30 hover:bg-rose-500/25 px-1.5 py-0.5 rounded text-[8px] font-bold cursor-pointer"
+                                    >
+                                      REVOKE
+                                    </button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const tokensStr = prompt("Set token balance:", String(p.token_balance));
+                                      if (tokensStr !== null) {
+                                        const tokens = parseInt(tokensStr);
+                                        if (!isNaN(tokens) && tokens >= 0) {
+                                          handleUpdateUserProfile(p.id, p.subscription_status, tokens);
+                                        } else {
+                                          alert('Invalid token value. Must be 0 or greater.');
+                                        }
+                                      }
+                                    }}
+                                    className="bg-cyan-500/15 text-cyan-400 border border-cyan-500/30 hover:bg-cyan-500/25 px-1.5 py-0.5 rounded text-[8px] font-bold cursor-pointer"
+                                  >
+                                    TOKENS
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => loadUserWatchlist(p.id)}
+                                    className="bg-purple-500/15 text-purple-400 border border-purple-500/30 hover:bg-purple-500/25 px-1.5 py-0.5 rounded text-[8px] font-bold cursor-pointer"
+                                  >
+                                    WATCHLIST
+                                  </button>
+                                  {p.role !== 'admin' && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteUserProfile(p.id)}
+                                      className="bg-rose-500/15 text-rose-400 border border-rose-500/30 hover:bg-rose-500/25 px-1.5 py-0.5 rounded text-[8px] font-bold cursor-pointer"
+                                    >
+                                      DELETE
+                                    </button>
+                                  )}
                                 </td>
                               </tr>
                             ))}
                           </tbody>
                         </table>
                       </div>
+                    </div>
+
+                    {/* Watchlist Inspection Panel */}
+                    {selectedWatchlistUserId && (
+                      <div className="bg-purple-950/10 border border-purple-500/20 rounded-2xl p-4 space-y-3">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[9px] uppercase tracking-widest text-purple-400 font-bold">
+                            📦 Watchlist for {userProfilesList.find((p: any) => p.id === selectedWatchlistUserId)?.email || 'Selected User'}
+                          </span>
+                          <button
+                            onClick={() => setSelectedWatchlistUserId(null)}
+                            className="text-slate-500 hover:text-slate-300 text-[10px] font-bold cursor-pointer"
+                          >
+                            ✕ CLOSE PANEL
+                          </button>
+                        </div>
+
+                        {selectedUserWatchlistLoading ? (
+                          <div className="flex justify-center items-center py-6 text-purple-400 font-bold">
+                            <span className="animate-spin rounded-full h-4 w-4 border-t border-b border-purple-500 mr-2" />
+                            RETRIEVING WATCHLIST...
+                          </div>
+                        ) : selectedUserWatchlist.length === 0 ? (
+                          <div className="text-center py-6 text-slate-500 italic">No watchlisted assets for this user.</div>
+                        ) : (
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-left border-collapse text-[10px]">
+                              <thead>
+                                <tr className="border-b border-slate-800 text-slate-500 uppercase tracking-widest text-[8px]">
+                                  <th className="py-2 px-2">Symbol</th>
+                                  <th className="py-2 px-2">Name</th>
+                                  <th className="py-2 px-2">SL</th>
+                                  <th className="py-2 px-2">T1</th>
+                                  <th className="py-2 px-2">T2</th>
+                                  <th className="py-2 px-2 text-right">Added</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {selectedUserWatchlist.map((item: any) => (
+                                  <tr key={item.id} className="border-b border-slate-850/50 hover:bg-purple-900/10">
+                                    <td className="py-2 px-2 font-bold text-slate-200">{item.symbol}</td>
+                                    <td className="py-2 px-2 text-slate-400">{item.name}</td>
+                                    <td className="py-2 px-2 text-rose-400 font-semibold">{item.stop_loss ? `₹${item.stop_loss.toFixed(0)}` : '-'}</td>
+                                    <td className="py-2 px-2 text-emerald-400 font-semibold">{item.target_1 ? `₹${item.target_1.toFixed(0)}` : '-'}</td>
+                                    <td className="py-2 px-2 text-emerald-400 font-semibold">{item.target_2 ? `₹${item.target_2.toFixed(0)}` : '-'}</td>
+                                    <td className="py-2 px-2 text-right text-slate-500">{item.added_at ? new Date(item.added_at).toLocaleDateString() : '-'}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </div>
                     )}
                   </div>
                 )}
 
-                {/* Recent scan logs */}
-                <div className="bg-slate-900/30 p-4 border border-slate-850 rounded-2xl">
-                  <span className="text-[9px] uppercase tracking-widest text-slate-500 block mb-2">Recent Queries Logs</span>
-                  <div className="overflow-y-auto max-h-40 font-mono text-[9px] space-y-1 bg-slate-950 p-3 rounded-xl border border-slate-850">
-                    {adminInsights.recent_logs?.map((l: any, idx: number) => (
-                      <div key={idx} className="border-b border-slate-900 pb-1 flex justify-between">
-                        <span className="text-slate-400">[{l.query_type}] {l.email}: {l.query_text}</span>
-                        <span className="text-slate-600">{new Date(l.created_at).toLocaleTimeString()}</span>
-                      </div>
-                    ))}
+                {/* ── MOCK REQUESTS TAB ───────────────────────────────────── */}
+                {adminSubTab === 'MOCK_REQ' && (
+                  <div className="animate-fadeIn">
+                    <div className="bg-cyan-950/10 border border-cyan-500/20 rounded-2xl p-4">
+                      <span className="text-[9px] uppercase tracking-widest text-cyan-400 font-bold block mb-3">📋 Pending Mock Account Requests</span>
+                      {!adminInsights.pending_mock_requests || adminInsights.pending_mock_requests.length === 0 ? (
+                        <div className="text-center py-8 text-slate-500">
+                          <span className="text-2xl block mb-2">✅</span>
+                          <p className="text-xs">No pending mock account requests.</p>
+                        </div>
+                      ) : (
+                        <div className="space-y-3">
+                          {adminInsights.pending_mock_requests.map((req: any) => (
+                            <div key={req.id} className="bg-slate-900/60 border border-slate-800 rounded-xl p-3 flex flex-col gap-2">
+                              <div className="flex items-center justify-between">
+                                <div>
+                                  <p className="text-slate-200 font-bold text-[11px]">{req.email || req.user_id}</p>
+                                  <p className="text-slate-500 text-[9px] mt-0.5">Requested: {req.created_at ? new Date(req.created_at).toLocaleDateString('en-IN') : '—'}</p>
+                                </div>
+                                <span className="text-[8px] font-bold px-2 py-1 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 animate-pulse">
+                                  PENDING
+                                </span>
+                              </div>
+                              <div className="flex gap-2 pt-1 border-t border-slate-800/50">
+                                <button
+                                  type="button"
+                                  onClick={() => handleAdminApproveRequest('mock', req.id, req.user_id, 'approve')}
+                                  className="flex-1 py-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-lg text-[9px] font-bold tracking-widest cursor-pointer transition-all"
+                                >
+                                  ✓ APPROVE MOCK
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleAdminApproveRequest('mock', req.id, req.user_id, 'reject')}
+                                  className="flex-1 py-1.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 rounded-lg text-[9px] font-bold tracking-widest cursor-pointer transition-all"
+                                >
+                                  ✗ REJECT
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
-                </div>
+                )}
 
-                {/* API & Bot Configuration Settings */}
-                <div className="bg-slate-900/30 p-4 border border-slate-850 rounded-2xl space-y-4">
-                  <span className="text-[9px] uppercase tracking-widest text-slate-500 block">🔑 API & Bot Configuration Settings</span>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="text-[9px] text-slate-400 block mb-1">GEMINI API KEY</label>
-                      <input
-                        type="password"
-                        placeholder="Enter Gemini API Key (e.g. AIzaSy...)"
-                        value={settingsGeminiKey}
-                        onChange={(e) => setSettingsGeminiKey(e.target.value)}
-                        className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-purple-500 transition-colors"
-                      />
-                      <span className="text-[8px] text-slate-500 mt-1 block">Used for the BIFROST AI chatbot assistant queries. Get a free key at aistudio.google.com</span>
-                    </div>
-                    <div>
-                      <label className="text-[9px] text-slate-400 block mb-1">WHATSAPP CALLMEBOT APIKEY</label>
-                      <input
-                        type="password"
-                        placeholder="Enter CallMeBot API Key"
-                        value={settingsWhatsAppKey}
-                        onChange={(e) => setSettingsWhatsAppKey(e.target.value)}
-                        className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-emerald-500 transition-colors"
-                      />
-                      <span className="text-[8px] text-slate-500 mt-1 block">Used to deliver real-time trade signals and hourly logs to +91 9846278548.</span>
-                    </div>
-                    <div>
-                      <label className="text-[9px] text-slate-400 block mb-1">FYERS CLIENT ID (ID)</label>
-                      <input
-                        type="text"
-                        placeholder="e.g. FAJ77193"
-                        value={settingsFyersId}
-                        onChange={(e) => setSettingsFyersId(e.target.value)}
-                        className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-cyan-500 transition-colors"
-                      />
-                      <span className="text-[8px] text-slate-500 mt-1 block">Your Fyers login ID. Required for token generation.</span>
-                    </div>
-                    <div>
-                      <label className="text-[9px] text-slate-400 block mb-1">FYERS LOGIN PIN (4 DIGIT)</label>
-                      <input
-                        type="password"
-                        placeholder="Enter 4-digit PIN"
-                        value={settingsFyersPin}
-                        onChange={(e) => setSettingsFyersPin(e.target.value)}
-                        className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-cyan-500 transition-colors"
-                      />
-                      <span className="text-[8px] text-slate-500 mt-1 block">Your Fyers 4-digit security PIN.</span>
-                    </div>
-                    <div className="col-span-2">
-                      <label className="text-[9px] text-slate-400 block mb-1">FYERS TOTP KEY (SECRET KEY)</label>
-                      <input
-                        type="password"
-                        placeholder="Enter 32-character TOTP secret key"
-                        value={settingsFyersTotpKey}
-                        onChange={(e) => setSettingsFyersTotpKey(e.target.value)}
-                        className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-cyan-500 transition-colors"
-                      />
-                      <span className="text-[8px] text-slate-500 mt-1 block">The base32 TOTP secret key from Fyers 2FA configuration to refresh tokens automatically.</span>
+                {/* ── UPGRADE REQUESTS TAB ────────────────────────────────── */}
+                {adminSubTab === 'UPGRADE_REQ' && (
+                  <div className="animate-fadeIn">
+                    <div className="bg-amber-950/10 border border-amber-500/20 rounded-2xl p-4">
+                      <span className="text-[9px] uppercase tracking-widest text-amber-400 font-bold block mb-3">⭐ Pending Premium Upgrade Requests</span>
+                      {!adminInsights.pending_upgrade_requests || adminInsights.pending_upgrade_requests.length === 0 ? (
+                        <div className="text-center py-8 text-slate-500">
+                          <span className="text-2xl block mb-2">✅</span>
+                          <p className="text-xs">No pending upgrade requests.</p>
+                        </div>
+                      ) : (
+                        <div className="space-y-3">
+                          {adminInsights.pending_upgrade_requests.map((req: any) => (
+                            <div key={req.id} className="bg-slate-900/60 border border-slate-800 rounded-xl p-3 flex flex-col gap-2">
+                              <div className="flex items-center justify-between">
+                                <div>
+                                  <p className="text-slate-200 font-bold text-[11px]">{req.email || req.user_id}</p>
+                                  <p className="text-slate-500 text-[9px] mt-0.5">Requested: {req.created_at ? new Date(req.created_at).toLocaleDateString('en-IN') : '—'}</p>
+                                </div>
+                                <span className="text-[8px] font-bold px-2 py-1 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 animate-pulse">
+                                  PENDING UPGRADE
+                                </span>
+                              </div>
+                              <div className="flex gap-2 items-center pt-1 border-t border-slate-800/50">
+                                <div className="flex-1">
+                                  <label className="text-[8px] text-slate-500 uppercase block mb-0.5">Token Grant</label>
+                                  <input
+                                    type="number"
+                                    id={`token-grant-${req.id}`}
+                                    defaultValue={500}
+                                    min={100}
+                                    max={10000}
+                                    className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-[10px] text-amber-300 font-mono focus:outline-none focus:border-amber-500"
+                                  />
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const inp = document.getElementById(`token-grant-${req.id}`) as HTMLInputElement;
+                                    const tokens = parseInt(inp?.value || '500');
+                                    handleAdminApproveRequest('upgrade', req.id, req.user_id, 'approve', tokens);
+                                  }}
+                                  className="py-1.5 px-3 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-lg text-[9px] font-bold tracking-widest cursor-pointer transition-all"
+                                >
+                                  ✓ APPROVE
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleAdminApproveRequest('upgrade', req.id, req.user_id, 'reject')}
+                                  className="py-1.5 px-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 rounded-lg text-[9px] font-bold cursor-pointer transition-all"
+                                >
+                                  ✗
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </div>
-                  <div className="flex justify-end">
-                    <button
-                      type="button"
-                      disabled={settingsLoading}
-                      onClick={handleSaveSettings}
-                      className="bg-purple-650 hover:bg-purple-600 border border-purple-500/30 hover:border-purple-500 text-white font-bold px-4 py-2 rounded-xl text-[10px] cursor-pointer transition-all flex items-center gap-1.5"
-                    >
-                      {settingsLoading ? 'SAVING...' : '💾 SAVE API SETTINGS'}
-                    </button>
+                )}
+
+                {/* ── METRICS/LOGS TAB ─────────────────────────────────────── */}
+                {adminSubTab === 'LOGS' && (
+                  <div className="space-y-4 animate-fadeIn">
+                    {/* Stats row */}
+                    <div className="grid grid-cols-3 gap-4">
+                      <div className="bg-slate-900/50 p-4 border border-slate-850 rounded-2xl">
+                        <span className="text-[9px] uppercase tracking-widest text-slate-500">Total Queries</span>
+                        <span className="block text-2xl font-black text-slate-100 mt-1">{adminInsights.total_queries}</span>
+                      </div>
+                      <div className="bg-slate-900/50 p-4 border border-slate-850 rounded-2xl">
+                        <span className="text-[9px] uppercase tracking-widest text-slate-500">SMC Scans</span>
+                        <span className="block text-2xl font-black text-cyan-400 mt-1">{adminInsights.total_scans}</span>
+                      </div>
+                      <div className="bg-slate-900/50 p-4 border border-slate-850 rounded-2xl">
+                        <span className="text-[9px] uppercase tracking-widest text-slate-500">AI Chats</span>
+                        <span className="block text-2xl font-black text-purple-400 mt-1">{adminInsights.total_chats}</span>
+                      </div>
+                    </div>
+
+                    {/* Live vs Mock */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="bg-rose-950/10 p-4 border border-rose-500/20 rounded-2xl">
+                        <span className="text-[9px] uppercase tracking-widest text-rose-400 font-bold block mb-3">Live Trading Metrics</span>
+                        <div className="space-y-2 font-mono text-[10px]">
+                          <div className="flex justify-between border-b border-slate-850/30 pb-1">
+                            <span className="text-slate-500">Total Live Trades:</span>
+                            <span className="font-bold text-slate-200">{adminInsights.live_trades_count || 0}</span>
+                          </div>
+                          <div className="flex justify-between border-b border-slate-850/30 pb-1">
+                            <span className="text-slate-500">Live Realized P&L:</span>
+                            <span className={`font-bold ${(adminInsights.live_pnl || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                              ₹{(adminInsights.live_pnl || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                            </span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-500">Active Integrations:</span>
+                            <span className="font-bold text-cyan-400">{adminInsights.active_integrations_count || 0}</span>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="bg-cyan-950/10 p-4 border border-cyan-500/20 rounded-2xl">
+                        <span className="text-[9px] uppercase tracking-widest text-cyan-400 font-bold block mb-3">Mock Trading Metrics</span>
+                        <div className="space-y-2 font-mono text-[10px]">
+                          <div className="flex justify-between border-b border-slate-850/30 pb-1">
+                            <span className="text-slate-500">Total Mock Trades:</span>
+                            <span className="font-bold text-slate-200">{adminInsights.mock_trades_count || 0}</span>
+                          </div>
+                          <div className="flex justify-between border-b border-slate-850/30 pb-1">
+                            <span className="text-slate-500">Mock Realized P&L:</span>
+                            <span className={`font-bold ${(adminInsights.mock_pnl || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                              ₹{(adminInsights.mock_pnl || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                            </span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-500">Approved Mock Accounts:</span>
+                            <span className="font-bold text-slate-400">{userProfilesList.filter((p: any) => p.subscription_status === 'active').length}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Top users and symbols */}
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="bg-slate-900/30 p-4 border border-slate-850 rounded-2xl">
+                        <span className="text-[9px] uppercase tracking-widest text-slate-500 block mb-2">Most Active Users</span>
+                        <ul className="space-y-1.5 font-bold">
+                          {adminInsights.top_users?.map((u: any, idx: number) => (
+                            <li key={idx} className="flex justify-between border-b border-slate-850/50 pb-1">
+                              <span className="truncate max-w-[140px]">{u.email}</span>
+                              <span className="text-cyan-400">{u.queries} hits</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                      <div className="bg-slate-900/30 p-4 border border-slate-850 rounded-2xl">
+                        <span className="text-[9px] uppercase tracking-widest text-slate-500 block mb-2">Trending Queries</span>
+                        <ul className="space-y-1.5 font-bold">
+                          {adminInsights.top_symbols?.map((s: any, idx: number) => (
+                            <li key={idx} className="flex justify-between border-b border-slate-850/50 pb-1">
+                              <span>{s.symbol}</span>
+                              <span className="text-amber-400">{s.count} scans</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    </div>
+
+                    {/* Recent scan logs */}
+                    <div className="bg-slate-900/30 p-4 border border-slate-850 rounded-2xl">
+                      <span className="text-[9px] uppercase tracking-widest text-slate-500 block mb-2">Recent Query Logs</span>
+                      <div className="overflow-y-auto max-h-40 font-mono text-[9px] space-y-1 bg-slate-950 p-3 rounded-xl border border-slate-850">
+                        {adminInsights.recent_logs?.map((l: any, idx: number) => (
+                          <div key={idx} className="border-b border-slate-900 pb-1 flex justify-between">
+                            <span className="text-slate-400">[{l.query_type}] {l.email}: {l.query_text}</span>
+                            <span className="text-slate-600 ml-2 flex-shrink-0">{new Date(l.created_at).toLocaleTimeString()}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
                   </div>
-                </div>
+                )}
+
+                {/* ── API SETTINGS TAB ─────────────────────────────────────── */}
+                {adminSubTab === 'SETTINGS' && (
+                  <div className="animate-fadeIn">
+                    <div className="bg-slate-900/30 p-4 border border-slate-850 rounded-2xl space-y-4">
+                      <span className="text-[9px] uppercase tracking-widest text-slate-500 block">🔑 API & Bot Configuration Settings</span>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="text-[9px] text-slate-400 block mb-1">GEMINI API KEY</label>
+                          <input
+                            type="password"
+                            placeholder="Enter Gemini API Key (e.g. AIzaSy...)"
+                            value={settingsGeminiKey}
+                            onChange={(e) => setSettingsGeminiKey(e.target.value)}
+                            className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-purple-500 transition-colors text-xs"
+                          />
+                          <span className="text-[8px] text-slate-500 mt-1 block">Used for AI chatbot and SMC LLM analysis. Get a free key at aistudio.google.com</span>
+                        </div>
+                        <div>
+                          <label className="text-[9px] text-slate-400 block mb-1">WHATSAPP CALLMEBOT APIKEY</label>
+                          <input
+                            type="password"
+                            placeholder="Enter CallMeBot API Key"
+                            value={settingsWhatsAppKey}
+                            onChange={(e) => setSettingsWhatsAppKey(e.target.value)}
+                            className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-emerald-500 transition-colors text-xs"
+                          />
+                          <span className="text-[8px] text-slate-500 mt-1 block">Used to deliver real-time trade signals and hourly logs to your WhatsApp.</span>
+                        </div>
+                        <div>
+                          <label className="text-[9px] text-slate-400 block mb-1">FYERS CLIENT ID</label>
+                          <input
+                            type="text"
+                            placeholder="e.g. FAJ77193"
+                            value={settingsFyersId}
+                            onChange={(e) => setSettingsFyersId(e.target.value)}
+                            className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-cyan-500 transition-colors text-xs"
+                          />
+                          <span className="text-[8px] text-slate-500 mt-1 block">Your Fyers login ID. Required for token generation.</span>
+                        </div>
+                        <div>
+                          <label className="text-[9px] text-slate-400 block mb-1">FYERS LOGIN PIN (4 DIGIT)</label>
+                          <input
+                            type="password"
+                            placeholder="Enter 4-digit PIN"
+                            value={settingsFyersPin}
+                            onChange={(e) => setSettingsFyersPin(e.target.value)}
+                            className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-cyan-500 transition-colors text-xs"
+                          />
+                          <span className="text-[8px] text-slate-500 mt-1 block">Your Fyers 4-digit security PIN.</span>
+                        </div>
+                        <div className="col-span-2">
+                          <label className="text-[9px] text-slate-400 block mb-1">FYERS TOTP KEY (SECRET KEY)</label>
+                          <input
+                            type="password"
+                            placeholder="Enter 32-character TOTP secret key"
+                            value={settingsFyersTotpKey}
+                            onChange={(e) => setSettingsFyersTotpKey(e.target.value)}
+                            className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-cyan-500 transition-colors text-xs"
+                          />
+                          <span className="text-[8px] text-slate-500 mt-1 block">The base32 TOTP secret key from Fyers 2FA configuration to refresh tokens automatically.</span>
+                        </div>
+                      </div>
+                      <div className="flex justify-end">
+                        <button
+                          type="button"
+                          disabled={settingsLoading}
+                          onClick={handleSaveSettings}
+                          className="bg-purple-500/20 hover:bg-purple-500/30 border border-purple-500/30 hover:border-purple-500 text-purple-300 font-bold px-4 py-2 rounded-xl text-[10px] cursor-pointer transition-all flex items-center gap-1.5"
+                        >
+                          {settingsLoading ? 'SAVING...' : '💾 SAVE API SETTINGS'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
               </div>
             ) : (
