@@ -2095,6 +2095,28 @@ export default function Dashboard() {
     }
   };
 
+  const handleDeleteUserProfile = async (userId: string) => {
+    if (!confirm("Are you sure you want to delete/block this user? This will deactivate their profile and permanently block their access.")) return;
+    try {
+      const headers = await getAuthHeaders();
+      const res = await fetch(`${BACKEND_URL}/api/admin/user/delete`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ user_id: userId })
+      });
+      if (res.ok) {
+        alert("User deleted/blocked successfully!");
+        loadAdminInsights();
+      } else {
+        const err = await res.json();
+        alert(`Failed to delete user: ${err.detail || 'Server error'}`);
+      }
+    } catch (err) {
+      console.error("Error deleting user:", err);
+      alert("Error deleting user.");
+    }
+  };
+
   const [bannersDismissed, setBannersDismissed] = useState<Record<string, boolean>>({});
 
   // Safety timeout to guarantee the loading screen gets dismissed in case of deadlocks
@@ -6216,7 +6238,7 @@ export default function Dashboard() {
                         </tr>
                       </thead>
                       <tbody>
-                        {userProfilesList.map((p: any) => (
+                        {userProfilesList.filter((p: any) => p.subscription_status !== 'blocked').map((p: any) => (
                           <tr key={p.id} className="border-b border-slate-850/50 hover:bg-slate-900/20">
                             <td className="py-2 px-2 text-slate-200 font-bold">{p.email}</td>
                             <td className="py-2 px-2 text-slate-400">{p.role}</td>
@@ -6272,6 +6294,13 @@ export default function Dashboard() {
                                 className="bg-purple-500/15 text-purple-400 border border-purple-500/30 hover:bg-purple-500/25 px-1.5 py-0.5 rounded text-[8px] font-bold cursor-pointer"
                               >
                                 WATCHLIST
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteUserProfile(p.id)}
+                                className="bg-rose-500/15 text-rose-400 border border-rose-500/30 hover:bg-rose-500/25 px-1.5 py-0.5 rounded text-[8px] font-bold cursor-pointer"
+                              >
+                                DELETE
                               </button>
                             </td>
                           </tr>
