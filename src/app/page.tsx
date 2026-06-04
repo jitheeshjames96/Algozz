@@ -2630,7 +2630,7 @@ export default function Dashboard() {
 
     let basePrice = 22660.0;
     if (assetVal.includes('BTC')) basePrice = 68000.0;
-    else if (assetVal === 'GC=F') basePrice = 2350.0;
+    else if (assetVal === 'GC=F') basePrice = 4470.0;
     else if (assetVal.includes('EURUSD')) basePrice = 1.0850;
     else if (assetVal.includes('GBPUSD')) basePrice = 1.2720;
     else if (assetVal.includes('USDJPY')) basePrice = 157.50;
@@ -6083,8 +6083,8 @@ export default function Dashboard() {
                     const isBuy = t.direction === 'BUY';
                     
                     const parsed = parseSlTpFromLogic(t.setup_logic || "");
-                    const slVal = parsed ? parsed.sl : (t.direction === 'BUY' ? Number(t.entry_price - 150) : Number(t.entry_price + 150));
-                    const tpVal = parsed ? parsed.tp : (t.direction === 'BUY' ? Number(t.entry_price + 300) : Number(t.entry_price - 300));
+                    const slVal = t.stop_loss ? Number(t.stop_loss) : (parsed ? parsed.sl : (t.direction === 'BUY' ? Number(t.entry_price - 150) : Number(t.entry_price + 150)));
+                    const tpVal = t.take_profit ? Number(t.take_profit) : (parsed ? parsed.tp : (t.direction === 'BUY' ? Number(t.entry_price + 300) : Number(t.entry_price - 300)));
                     
                     let progressPercent = 50;
                     if (isBuy) {
@@ -6097,6 +6097,18 @@ export default function Dashboard() {
                       }
                     }
                     const clampedPercent = Math.max(0, Math.min(100, progressPercent));
+                    
+                    let entryPercent = 50;
+                    if (isBuy) {
+                      if (tpVal > slVal) {
+                        entryPercent = ((entry - slVal) / (tpVal - slVal)) * 100;
+                      }
+                    } else {
+                      if (slVal > tpVal) {
+                        entryPercent = ((slVal - entry) / (slVal - tpVal)) * 100;
+                      }
+                    }
+                    const clampedEntryPercent = Math.max(0, Math.min(100, entryPercent));
                     const currentUnrealized = isBuy ? (current - entry) * t.quantity : (entry - current) * t.quantity;
   
                     return (
@@ -6152,11 +6164,11 @@ export default function Dashboard() {
                               <div className="relative h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
                                 <div 
                                   className="absolute top-0 bottom-0 bg-emerald-500/20"
-                                  style={{ left: isBuy ? '50%' : '0%', right: isBuy ? '0%' : '50%' }}
+                                  style={{ left: `${clampedEntryPercent}%`, right: '0%' }}
                                 />
                                 <div 
                                   className="absolute top-0 bottom-0 bg-rose-500/20"
-                                  style={{ left: isBuy ? '0%' : '50%', right: isBuy ? '50%' : '0%' }}
+                                  style={{ left: '0%', width: `${clampedEntryPercent}%` }}
                                 />
                                 <div 
                                   className="absolute top-0 bottom-0 w-1.5 bg-cyan-400 shadow-md shadow-cyan-400/80 rounded-full transition-all duration-300"
@@ -6332,8 +6344,8 @@ export default function Dashboard() {
                                 {/* Trade SL & TP Targets Display */}
                                 {(() => {
                                   const parsed = parseSlTpFromLogic(t.setup_logic || "");
-                                  const slVal = parsed ? parsed.sl : (t.direction === 'BUY' ? Number(t.entry_price - 150) : Number(t.entry_price + 150));
-                                  const tpVal = parsed ? parsed.tp : (t.direction === 'BUY' ? Number(t.entry_price + 300) : Number(t.entry_price - 300));
+                                  const slVal = t.stop_loss ? Number(t.stop_loss) : (parsed ? parsed.sl : (t.direction === 'BUY' ? Number(t.entry_price - 150) : Number(t.entry_price + 150)));
+                                  const tpVal = t.take_profit ? Number(t.take_profit) : (parsed ? parsed.tp : (t.direction === 'BUY' ? Number(t.entry_price + 300) : Number(t.entry_price - 300)));
                                   return (
                                     <div className="grid grid-cols-2 gap-3 bg-slate-950/60 p-2 rounded-lg border border-slate-850/50">
                                       <div>
