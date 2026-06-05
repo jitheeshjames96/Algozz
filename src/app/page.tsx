@@ -1595,6 +1595,35 @@ export default function Dashboard() {
     }
   };
 
+  const [recapitalizePending, setRecapitalizePending] = useState(false);
+
+  const requestRecapitalize = async () => {
+    if (recapitalizePending) return;
+    setRecapitalizePending(true);
+    try {
+      const headers = await getAuthHeaders();
+      const res = await fetch(`${BACKEND_URL}/api/recapitalize/request`, {
+        method: 'POST',
+        headers: {
+          ...headers,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ market_type: marketEnv })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        alert("Recapitalization request submitted successfully! Awaiting admin approval.");
+      } else {
+        alert(data.detail || "Failed to request recapitalization.");
+      }
+    } catch (e: any) {
+      console.error("Error requesting recapitalization:", e);
+      alert("Error requesting recapitalization: " + e.message);
+    } finally {
+      setRecapitalizePending(false);
+    }
+  };
+
   const handleRequestMockAccount = async () => {
     try {
       const headers = await getAuthHeaders();
@@ -1880,7 +1909,7 @@ export default function Dashboard() {
   const [algoStrategyDeployLoading, setAlgoStrategyDeployLoading] = useState(false);
 
   // Admin approvals sub-tab state
-  const [adminSubTab, setAdminSubTab] = useState<'USERS' | 'MOCK_REQ' | 'UPGRADE_REQ' | 'LOGS' | 'SETTINGS'>('USERS');
+  const [adminSubTab, setAdminSubTab] = useState<'USERS' | 'MOCK_REQ' | 'UPGRADE_REQ' | 'RECAP_REQ' | 'LOGS' | 'SETTINGS'>('USERS');
 
 
   // Proportional Weights Slider Adjuster
@@ -2389,9 +2418,8 @@ export default function Dashboard() {
   // Fetch all dashboard data from Supabase and FastAPI
   const loadData = async () => {
     try {
-      const prefix = tradeMode === 'LIVE' ? 'production_' : '';
-      const summaryTable = marketEnv === 'FOREX' ? `${prefix}forex_account_summary` : `${prefix}account_summary`;
-      const tradesTable = marketEnv === 'FOREX' ? `${prefix}forex_trades` : `${prefix}trades`;
+      const summaryTable = marketEnv === 'FOREX' ? 'forex_account_summary' : 'account_summary';
+      const tradesTable = marketEnv === 'FOREX' ? 'mock_forex_trades' : 'mock_trades';
 
       let queryUserId = user?.id;
       const isAdmin = userProfile?.role === 'admin';
@@ -2859,9 +2887,8 @@ export default function Dashboard() {
     loadChartAndState(resolutionRef.current, assetRef.current);
     checkMarketState();
 
-    const prefix = tradeMode === 'LIVE' ? 'production_' : '';
-    const tradesTable = marketEnv === 'FOREX' ? `${prefix}forex_trades` : `${prefix}trades`;
-    const summaryTable = marketEnv === 'FOREX' ? `${prefix}forex_account_summary` : `${prefix}account_summary`;
+    const tradesTable = marketEnv === 'FOREX' ? 'mock_forex_trades' : 'mock_trades';
+    const summaryTable = marketEnv === 'FOREX' ? 'forex_account_summary' : 'account_summary';
 
     // 3. Supabase Real-Time Subscriptions (Utilizing unique channel names to prevent crossover conflicts)
     const tradesChannel = supabase
@@ -3094,9 +3121,8 @@ export default function Dashboard() {
     // 1. Fetch Indian Option Trades
     let indianOptionTradesList = [];
     try {
-      const prefix = tradeMode === 'LIVE' ? 'production_' : '';
       const { data } = await supabase
-        .from(`${prefix}trades`)
+        .from('mock_trades')
         .select('*')
         .order('entry_time', { ascending: false });
       if (data) indianOptionTradesList = data;
@@ -3108,9 +3134,8 @@ export default function Dashboard() {
     // 2. Fetch Forex Trades
     let forexTradesList = [];
     try {
-      const prefix = tradeMode === 'LIVE' ? 'production_' : '';
       const { data } = await supabase
-        .from(`${prefix}forex_trades`)
+        .from('mock_forex_trades')
         .select('*')
         .order('entry_time', { ascending: false });
       if (data) forexTradesList = data;
@@ -3350,16 +3375,27 @@ export default function Dashboard() {
     }
   };
 
-  const handleAdminApproveRequest = async (type: 'mock' | 'upgrade', requestId: string, userId: string, action: 'approve' | 'reject', tokenBalance?: number) => {
+  const handleAdminApproveRequest = async (type: 'mock' | 'upgrade' | 'recap', requestId: string, userId: string, action: 'approve' | 'reject', tokenBalance?: number, marketType?: string) => {
     try {
       const headers = await getAuthHeaders();
-      const endpoint = type === 'mock' ? '/api/admin/mock/approve' : '/api/admin/upgrade/approve';
+      let endpoint = '';
       const body: any = { request_id: requestId, user_id: userId, action };
-      if (type === 'upgrade' && tokenBalance) body.token_balance = tokenBalance;
+      if (type === 'mock') {
+        endpoint = '/api/admin/mock/approve';
+      } else if (type === 'upgrade') {
+        endpoint = '/api/admin/upgrade/approve';
+        if (tokenBalance) body.token_balance = tokenBalance;
+      } else if (type === 'recap') {
+        endpoint = '/api/admin/recapitalize/approve';
+        body.market_type = marketType || 'FOREX';
+      }
       
       const res = await fetch(`${BACKEND_URL}${endpoint}`, {
         method: 'POST',
-        headers,
+        headers: {
+          ...headers,
+          'Content-Type': 'application/json'
+        },
         body: JSON.stringify(body)
       });
       if (res.ok) {
@@ -4089,12 +4125,29 @@ export default function Dashboard() {
         <section className="grid grid-cols-2 lg:grid-cols-7 gap-3 mb-6">
           {/* Net Equity */}
           <div className="relative border border-slate-800 bg-[#070b15]/80 rounded-2xl p-4 shadow-xl">
-            <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block mb-1">Net Equity</span>
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-slate-500 font-mono text-[9px] uppercase tracking-wider block">Net Equity</span>
+              {metrics.account_capital < startingCapital && (
+                <button
+                  onClick={requestRecapitalize}
+                  disabled={recapitalizePending}
+                  className="text-[8px] font-bold font-mono text-cyan-400 bg-cyan-500/10 border border-cyan-500/25 rounded px-1.5 py-0.5 hover:bg-cyan-500/20 disabled:opacity-50 transition-all cursor-pointer"
+                  title="Request account balance reset"
+                >
+                  {recapitalizePending ? 'PENDING...' : 'RESET'}
+                </button>
+              )}
+            </div>
             <span className="text-xl md:text-2xl font-black text-slate-100 font-mono">
               {formatCurrency(metrics.account_capital, marketEnv)}
             </span>
-            <div className="text-[10px] text-slate-500 mt-1 font-mono">
-              Base: {formatCurrency(startingCapital, marketEnv)}
+            <div className="text-[10px] text-slate-500 mt-1 font-mono flex items-center justify-between">
+              <span>Base: {formatCurrency(startingCapital, marketEnv)}</span>
+              {userProfile?.recapitalize_count > 0 && (
+                <span className="text-cyan-500/80 text-[9px]" title="Number of times account was recapitalized">
+                  Resets: {userProfile.recapitalize_count}
+                </span>
+              )}
             </div>
           </div>
 
@@ -5989,23 +6042,12 @@ export default function Dashboard() {
               <div className="flex flex-col gap-2.5 border-b border-slate-800/80 pb-3 mb-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <span className="inline-block h-3 w-3 rounded-full bg-emerald-500 animate-pulse" />
-                    <h2 className="text-xs font-bold font-mono tracking-widest text-slate-400 uppercase">ACTIVE LEDGER ({activeTrades.length})</h2>
+                    <span className="inline-block h-3 w-3 rounded-full bg-cyan-500 animate-pulse" />
+                    <h2 className="text-xs font-bold font-mono tracking-widest text-slate-400 uppercase">ACTIVE MOCK LEDGER ({activeTrades.length})</h2>
                   </div>
-                  {/* TRADING MODE TOGGLE */}
-                  <div className="flex items-center gap-1 bg-slate-900/60 p-0.5 rounded-md border border-slate-800 font-mono text-[9px] font-bold">
-                    <button 
-                      onClick={() => setTradeMode('MOCK')} 
-                      className={`px-1.5 py-0.5 rounded cursor-pointer transition-all ${tradeMode === 'MOCK' ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30' : 'text-slate-500'}`}
-                    >
-                      MOCK
-                    </button>
-                    <button 
-                      onClick={() => setTradeMode('LIVE')} 
-                      className={`px-1.5 py-0.5 rounded cursor-pointer transition-all ${tradeMode === 'LIVE' ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30' : 'text-slate-500'}`}
-                    >
-                      LIVE
-                    </button>
+                  {/* TRADING MODE LOCKED TO MOCK */}
+                  <div className="flex items-center gap-1 bg-cyan-950/20 px-2 py-0.5 rounded border border-cyan-500/20 font-mono text-[9px] text-cyan-400 font-bold uppercase tracking-wider">
+                    Mock Mode Only
                   </div>
                 </div>
                 
@@ -6230,7 +6272,7 @@ export default function Dashboard() {
                 <div className="flex items-center gap-2">
                   <span className="inline-block h-3 w-3 rounded-full bg-slate-600 transition-colors group-hover:bg-slate-400" />
                   <h2 className="text-xs font-bold font-mono tracking-widest text-slate-400 uppercase group-hover:text-slate-200 transition-colors">
-                    PAST TRADES ({trades.filter(t => t.status === 'CLOSED' && isAssetMatch(selectedAsset, t.symbol)).length})
+                    PAST MOCK TRADES ({trades.filter(t => t.status === 'CLOSED' && isAssetMatch(selectedAsset, t.symbol)).length})
                   </h2>
                 </div>
                 <div className="flex items-center gap-2 font-mono text-[10px] text-slate-500 group-hover:text-slate-300 transition-colors">
@@ -6614,12 +6656,11 @@ export default function Dashboard() {
                 <div>
                   <label className="text-[9px] text-slate-500 block mb-1">TRADE MODE</label>
                   <select
-                    value={brokerTradeMode}
-                    onChange={(e) => setBrokerTradeMode(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-cyan-500 transition-colors cursor-pointer"
+                    value="MOCK"
+                    disabled
+                    className="w-full bg-slate-950/50 border border-slate-900 rounded-lg px-3 py-2 text-slate-500 focus:outline-none transition-colors cursor-not-allowed"
                   >
-                    <option value="MOCK">MOCK</option>
-                    <option value="LIVE">LIVE</option>
+                    <option value="MOCK">MOCK ONLY</option>
                   </select>
                 </div>
               </div>
@@ -6686,6 +6727,7 @@ export default function Dashboard() {
                     { id: 'USERS', label: '👥 Users', badge: userProfilesList.length },
                     { id: 'MOCK_REQ', label: '🔵 Mock Requests', badge: adminInsights.pending_mock_requests?.length || 0, pulse: (adminInsights.pending_mock_requests?.length || 0) > 0 },
                     { id: 'UPGRADE_REQ', label: '⭐ Upgrade Req', badge: adminInsights.pending_upgrade_requests?.length || 0, pulse: (adminInsights.pending_upgrade_requests?.length || 0) > 0 },
+                    { id: 'RECAP_REQ', label: '🔄 Recap Req', badge: adminInsights.pending_recapitalize_requests?.length || 0, pulse: (adminInsights.pending_recapitalize_requests?.length || 0) > 0 },
                     { id: 'LOGS', label: '📊 Metrics', badge: null },
                     { id: 'SETTINGS', label: '⚙️ Settings', badge: null }
                   ].map(tab => (
@@ -6974,6 +7016,57 @@ export default function Dashboard() {
                                   className="py-1.5 px-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 rounded-lg text-[9px] font-bold cursor-pointer transition-all"
                                 >
                                   ✗
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* ── RECAPITALIZE REQUESTS TAB ────────────────────────────── */}
+                {adminSubTab === 'RECAP_REQ' && (
+                  <div className="animate-fadeIn">
+                    <div className="bg-cyan-950/10 border border-cyan-500/20 rounded-2xl p-4">
+                      <span className="text-[9px] uppercase tracking-widest text-cyan-400 font-bold block mb-3">🔄 Pending Recapitalize Requests</span>
+                      {!adminInsights.pending_recapitalize_requests || adminInsights.pending_recapitalize_requests.length === 0 ? (
+                        <div className="text-center py-8 text-slate-500">
+                          <span className="text-2xl block mb-2">✅</span>
+                          <p className="text-xs">No pending recapitalize requests.</p>
+                        </div>
+                      ) : (
+                        <div className="space-y-3">
+                          {adminInsights.pending_recapitalize_requests.map((req: any) => (
+                            <div key={req.id} className="bg-slate-900/60 border border-slate-800 rounded-xl p-3 flex flex-col gap-2">
+                              <div className="flex items-center justify-between">
+                                <div>
+                                  <p className="text-slate-200 font-bold text-[11px]">{req.user_profiles?.email || req.user_id}</p>
+                                  <p className="text-slate-500 text-[9px] mt-0.5">
+                                    Market: <span className="text-cyan-400 font-bold">{req.market_type}</span> | 
+                                    Prior resets: <span className="text-amber-400 font-bold">{req.user_profiles?.recapitalize_count || 0}</span>
+                                  </p>
+                                  <p className="text-slate-500 text-[9px]">Requested: {req.created_at ? new Date(req.created_at).toLocaleDateString('en-IN') : '—'}</p>
+                                </div>
+                                <span className="text-[8px] font-bold px-2 py-1 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 animate-pulse">
+                                  PENDING RESET
+                                </span>
+                              </div>
+                              <div className="flex gap-2 pt-1 border-t border-slate-800/50">
+                                <button
+                                  type="button"
+                                  onClick={() => handleAdminApproveRequest('recap', req.id, req.user_id, 'approve', undefined, req.market_type)}
+                                  className="flex-1 py-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-lg text-[9px] font-bold tracking-widest cursor-pointer transition-all"
+                                >
+                                  ✓ APPROVE RESET
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleAdminApproveRequest('recap', req.id, req.user_id, 'reject', undefined, req.market_type)}
+                                  className="flex-1 py-1.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 rounded-lg text-[9px] font-bold tracking-widest cursor-pointer transition-all"
+                                >
+                                  ✗ REJECT
                                 </button>
                               </div>
                             </div>
